@@ -185,6 +185,15 @@ jobs:
       # fresh clone and catastrophic for a shipped build: Android refuses to
       # update a debug-signed install with a properly signed one. release-check
       # guards the inputs; this guards the output.
+      # Verified with `apksigner`, not `keytool -printcert -jarfile`.
+      #
+      # minSdk is 24, and at 24+ AGP signs with APK Signature Scheme v2/v3 only
+      # — it disables v1 (JAR) signing entirely. `keytool -jarfile` reads v1
+      # signatures, so against a modern APK it finds nothing and reports no
+      # signer at all, which is indistinguishable from an unsigned build.
+      # `apksigner` understands every scheme and is the tool Google ships for
+      # exactly this check. An AAB has no APK signature block, so it is verified
+      # with keytool, which does still work on the JAR signature a bundle keeps.
       - name: Verify the build is release-signed
         run: |
           ART=$(find "${{ steps.build.outputs.path }}" -name '${{ steps.build.outputs.glob }}' | head -1)
@@ -194,16 +203,42 @@ jobs:
           fi
           echo "Artefact: $ART"
           ls -lh "$ART"
-          SIGNER=$(keytool -printcert -jarfile "$ART" | grep -m1 'Owner:' || true)
-          echo "$SIGNER"
-          if echo "$SIGNER" | grep -q 'CN=Android Debug'; then
-            echo "::error::Build is DEBUG-signed and must not be shipped."
-            exit 1
-          fi
+
+          case "$ART" in
+            *.apk)
+              SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+              if [ -z "$SDK" ] || [ ! -d "$SDK/build-tools" ]; then
+                echo "::error::Android SDK build-tools not found (ANDROID_HOME=$ANDROID_HOME)."
+                exit 1
+              fi
+              APKSIGNER=$(find "$SDK/build-tools" -name apksigner -type f | sort -r | head -1)
+              if [ -z "$APKSIGNER" ]; then
+                echo "::error::apksigner not found in the Android SDK."
+                exit 1
+              fi
+              echo "Using $APKSIGNER"
+              CERTS=$("$APKSIGNER" verify --print-certs "$ART") || {
+                echo "::error::apksigner could not verify the APK — it is not validly signed."
+                exit 1
+              }
+              echo "$CERTS"
+              SIGNER=$(echo "$CERTS" | grep -m1 'certificate DN:')
+              ;;
+            *)
+              SIGNER=$(keytool -printcert -jarfile "$ART" | grep -m1 'Owner:')
+              echo "$SIGNER"
+              ;;
+          esac
+
           if [ -z "$SIGNER" ]; then
             echo "::error::Could not read a signature — refusing to publish an unverified build."
             exit 1
           fi
+          if echo "$SIGNER" | grep -q 'CN=Android Debug'; then
+            echo "::error::Build is DEBUG-signed and must not be shipped."
+            exit 1
+          fi
+          echo "Release-signed OK."
 
       - name: Upload artefact
         uses: actions/upload-artifact@v4
