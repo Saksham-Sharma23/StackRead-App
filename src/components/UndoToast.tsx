@@ -1,4 +1,5 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import Animated, { FadeInDown, FadeOutDown } from 'react-native-reanimated'
 
 import { usePendingRemoval } from '../store/pendingRemoval'
@@ -12,7 +13,24 @@ import { Duration, Ease, layoutTransition } from '../ui/motion'
  * timer, exactly as on desktop.
  */
 
-function Toast({ id, label, theme, index }: { id: string; label: string; theme: Theme; index: number }) {
+/** Gap between the lowest toast and whatever is below it. */
+const TOAST_GAP = 18
+/** Row pitch: toast height (~45) plus the gap. */
+const TOAST_PITCH = 58
+
+function Toast({
+  id,
+  label,
+  theme,
+  index,
+  bottomInset,
+}: {
+  id: string
+  label: string
+  theme: Theme
+  index: number
+  bottomInset: number
+}) {
   const undo = usePendingRemoval((s) => s.undo)
 
   return (
@@ -24,7 +42,23 @@ function Toast({ id, label, theme, index }: { id: string; label: string; theme: 
       layout={layoutTransition()}
       style={[
         styles.toast,
-        { backgroundColor: theme.dark ? '#2a2a32' : '#23232b', bottom: 18 + index * 58 },
+        {
+          backgroundColor: theme.dark ? '#2a2a32' : '#23232b',
+          /*
+           * The safe-area inset is not optional here.
+           *
+           * The app runs edge-to-edge with both system bars transparent, so the
+           * parent `absoluteFill` spans the whole window — `bottom: 18` put the
+           * toast *underneath* the 3-button navigation bar, with UNDO half
+           * unreachable. Every other bottom-anchored surface in the app already
+           * pads by this; this was the one that did not.
+           *
+           * It matters more here than anywhere else because the undo window is
+           * five seconds: a target that has to be fought for is a target that
+           * expires.
+           */
+          bottom: bottomInset + TOAST_GAP + index * TOAST_PITCH,
+        },
       ]}
     >
       <Text numberOfLines={1} style={styles.text}>
@@ -39,6 +73,9 @@ function Toast({ id, label, theme, index }: { id: string; label: string; theme: 
 
 export function UndoToasts({ theme }: { theme: Theme }) {
   const pending = usePendingRemoval((s) => s.pending)
+  // Read once here rather than per toast: the whole stack shares one inset, and
+  // a hook per row would recompute it for every pending removal.
+  const insets = useSafeAreaInsets()
   if (!pending.length) return null
 
   /*
@@ -62,6 +99,7 @@ export function UndoToasts({ theme }: { theme: Theme }) {
           label={p.batchLabel ?? `Removed “${p.entry.name}”`}
           theme={theme}
           index={i}
+          bottomInset={insets.bottom}
         />
       ))}
     </View>

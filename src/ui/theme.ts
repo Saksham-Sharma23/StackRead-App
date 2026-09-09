@@ -23,6 +23,23 @@ export interface Theme {
   overlay: string
   /** The grey behind document pages, so each page reads as a separate sheet. */
   gutter: string
+  /**
+   * The frosted strip drawn behind the Android navigation bar, bottom-most stop
+   * last.
+   *
+   * A ramp rather than one colour because the app runs edge-to-edge: content
+   * scrolls *under* a transparent navigation bar, and a single flat fill draws a
+   * hard line across the screen where the strip begins. Stacking a few
+   * increasing alphas fades content out into the bar instead, which is what
+   * reads as glass.
+   *
+   * Four stops, and they live here rather than in the component for the reason
+   * stated at the top of this file: a hard-coded `rgba()` in a component is a
+   * colour that cannot follow the theme.
+   */
+  navScrim: readonly [string, string, string, string]
+  /** The hairline that gives the scrim a top edge rather than a fade to nothing. */
+  navScrimEdge: string
 }
 
 const light: Theme = {
@@ -38,6 +55,15 @@ const light: Theme = {
   danger: '#e5342a',
   overlay: 'rgba(0,0,0,0.45)',
   gutter: '#b8bcc4',
+  // Built from `bg` (#f7f7f9) so the strip resolves to the page colour at full
+  // strength rather than to a grey that reads as a foreign surface.
+  navScrim: [
+    'rgba(247,247,249,0.25)',
+    'rgba(247,247,249,0.55)',
+    'rgba(247,247,249,0.80)',
+    'rgba(247,247,249,0.94)',
+  ],
+  navScrimEdge: 'rgba(0,0,0,0.05)',
 }
 
 /**
@@ -88,6 +114,16 @@ const dark: Theme = {
    * from it.
    */
   gutter: '#04050a',
+  // From `bg` (#0b0c11) for the same reason as the light ramp. The top stop is
+  // deliberately weak: over a near-black board a strong first step is a visible
+  // band rather than a fade.
+  navScrim: [
+    'rgba(11,12,17,0.20)',
+    'rgba(11,12,17,0.50)',
+    'rgba(11,12,17,0.78)',
+    'rgba(11,12,17,0.94)',
+  ],
+  navScrimEdge: 'rgba(255,255,255,0.06)',
 }
 
 export function useTheme(): Theme {

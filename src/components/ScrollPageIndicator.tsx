@@ -10,7 +10,7 @@ import Animated, {
 } from 'react-native-reanimated'
 
 import { usePageNav } from '../store/pageNav'
-import { Ease, Spring, Timing } from '../ui/motion'
+import { Duration, Ease, Spring, Timing } from '../ui/motion'
 
 /**
  * A draggable scroll position control: a thin track down the right edge with a
@@ -43,6 +43,34 @@ const IDLE_TRACK_OPACITY = 0.28
 const SEEK_THROTTLE_MS = 60
 /** Vertical padding inside the track, so the ends are reachable. */
 const TRACK_PAD = 4
+
+/**
+ * Width of the touch column holding the track and thumb.
+ *
+ * Named because three things depend on it: the column itself, the badge's right
+ * offset, and the fact that everything outside it must stay tappable by the
+ * document underneath.
+ */
+const COLUMN_W = 44
+
+/**
+ * Rendered height of the badge, used to centre it on the thumb.
+ *
+ * One text row at 13pt with 5pt of padding each side. Derived rather than
+ * hand-tuned so the offset below cannot drift away from the pill it centres.
+ */
+const BADGE_H = 30
+
+/**
+ * The idle fade-out.
+ *
+ * Slower than the control appeared — `Timing.tint` is 100ms — and accelerating
+ * away, because something leaving of its own accord should not snatch attention
+ * on the way out. Composed from the shared tokens rather than written as a bare
+ * pair of numbers, which is what [motion.ts](../ui/motion.ts) asks of every
+ * animation in the app.
+ */
+const HIDE_FADE = { duration: Duration.medium, easing: Ease.exit } as const
 
 interface Props {
   fileId: string
@@ -140,9 +168,7 @@ export function ScrollPageIndicator({
     // like the seek was simply ignored.
     if (pendingRef.current) return
     hideTimer.current = setTimeout(() => {
-      // Slower than it appeared, and accelerating away: a control that is
-      // leaving of its own accord should not snatch attention on the way out.
-      visible.value = withTiming(0, { duration: 320, easing: Ease.exit })
+      visible.value = withTiming(0, HIDE_FADE)
     }, IDLE_HIDE_MS)
   }, [visible])
 
@@ -344,61 +370,82 @@ export function ScrollPageIndicator({
   if (total < 2) return null
 
   return (
-    <GestureDetector gesture={pan}>
-      <View
-        style={[styles.wrap, { top: topInset + 56, bottom: bottomInset + 56 }]}
-        onLayout={(e) => {
-          trackHeight.value = Math.max(1, e.nativeEvent.layout.height - TRACK_PAD * 2)
-        }}
-      >
-        <Animated.View style={[styles.track, fade]} pointerEvents="none" />
-        <Animated.View style={[styles.thumb, thumb]} pointerEvents="none" />
+    /*
+     * A full-width host, with the gesture column and the badge as siblings.
+     *
+     * This is not cosmetic nesting. Yoga lays an absolutely-positioned child out
+     * against its parent's box, so while the badge was a child of the 44pt
+     * column its own width resolved to about 26pt — enough for "115 / 2…" and
+     * nothing else, with the divider and percentage pushed outside the box
+     * entirely and never drawn. An earlier fix described moving it out and did
+     * not actually do so; the comment claiming it lived outside the column was
+     * describing an intention, not the tree.
+     *
+     * `box-none` is what keeps the change free: the host covers the screen but
+     * takes no touches of its own, so only the column below is grabbable and the
+     * document underneath still receives everything else.
+     */
+    <View
+      pointerEvents="box-none"
+      style={[styles.host, { top: topInset + 56, bottom: bottomInset + 56 }]}
+    >
+      <GestureDetector gesture={pan}>
+        <View
+          style={styles.column}
+          onLayout={(e) => {
+            trackHeight.value = Math.max(1, e.nativeEvent.layout.height - TRACK_PAD * 2)
+          }}
+        >
+          <Animated.View style={[styles.track, fade]} pointerEvents="none" />
+          <Animated.View style={[styles.thumb, thumb]} pointerEvents="none" />
+        </View>
+      </GestureDetector>
+
+      {/*
+        Sized by its content, because nothing constrains it any more.
+        `numberOfLines={1}` stays as a guarantee against a pathological
+        publisher label rather than as the thing holding the layout together.
+      */}
+      <Animated.View style={[styles.badge, badge]} pointerEvents="none">
+        <Text numberOfLines={1} style={styles.badgeText}>
+          {/*
+            While a seek is outstanding the badge shows where the reader is
+            *going*, not the page being left — the label is dropped in that
+            case because a publisher's page label belongs to the reported
+            position and would contradict the number beside it.
+          */}
+          {dragging || pendingPage !== null
+            ? (dragging ? dragPage : pendingPage)
+            : (pos?.label ?? current)}
+          <Text style={styles.badgeTotal}>{` / ${total}`}</Text>
+        </Text>
 
         {/*
-          The badge lives outside the 44pt gesture column.
-          
-          As a child of it, the label had 24pt of usable width and "443 / 592"
-          wrapped into three stacked fragments — the heavy black block that made
-          this control look broken rather than merely plain. Absolutely
-          positioned against the same parent but laid out right-to-left from the
-          track, with `numberOfLines={1}` as a guarantee rather than a hope.
-        */}
-        <Animated.View style={[styles.badge, badge]} pointerEvents="none">
-          <Text numberOfLines={1} style={styles.badgeText}>
-            {/*
-              While a seek is outstanding the badge shows where the reader is
-              *going*, not the page being left — the label is dropped in that
-              case because a publisher's page label belongs to the reported
-              position and would contradict the number beside it.
-            */}
-            {dragging || pendingPage !== null
-              ? (dragging ? dragPage : pendingPage)
-              : (pos?.label ?? current)}
-            <Text style={styles.badgeTotal}>{` / ${total}`}</Text>
-          </Text>
+          The percentage is dropped while dragging.
 
-          {/*
-            The percentage is dropped while dragging.
-            
-            Mid-drag the page number is the thing being aimed at, and a second
-            number changing at a different rate beside it competes for the eye.
-            It returns on release, when it is context rather than noise.
-          */}
-          {!dragging && pendingPage === null && pos?.percent != null && (
-            <>
-              <View style={styles.badgeDivider} />
-              <Text style={styles.badgePercent}>{pos.percent}%</Text>
-            </>
-          )}
-        </Animated.View>
-      </View>
-    </GestureDetector>
+          Mid-drag the page number is the thing being aimed at, and a second
+          number changing at a different rate beside it competes for the eye.
+          It returns on release, when it is context rather than noise.
+        */}
+        {!dragging && pendingPage === null && pos?.percent != null && (
+          <>
+            <View style={styles.badgeDivider} />
+            <Text style={styles.badgePercent}>{pos.percent}%</Text>
+          </>
+        )}
+      </Animated.View>
+    </View>
   )
 }
 
 const styles = StyleSheet.create({
-  // Wide enough to catch a thumb reliably; the drawn control stays thin.
-  wrap: { position: 'absolute', right: 0, width: 44 },
+  /* Spans the screen so the badge has room to grow leftward; takes no touches
+     itself (`box-none` on the element), so only `column` below is grabbable. */
+  host: { position: 'absolute', left: 0, right: 0 },
+  /* Wide enough to catch a thumb reliably; the drawn control stays thin.
+     Stretched to the host's full height, so `e.y` in the pan handlers keeps
+     measuring against the same extent it always did. */
+  column: { position: 'absolute', right: 0, top: 0, bottom: 0, width: COLUMN_W },
   /* `width` is animated (it thickens on grab), so it is deliberately absent
      here — a static value would read as the source of truth and get "restored"
      by the next reader. */
@@ -428,23 +475,31 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(0,0,0,0.25)',
   },
   /*
-   * Right-anchored to the track rather than parented inside it.
+   * Right-anchored just clear of the touch column, and free to grow leftward.
    *
-   * `right: 18` places it just left of the thumb; because the parent is only
-   * 44pt wide, the badge must be free to extend *past* its parent's left edge,
-   * which absolute positioning without a width constraint allows. The previous
-   * version relied on the parent for width and got 24pt.
+   * The important part is the *parent*, not this rule: `badge` is a child of
+   * `host`, which spans the screen, so "no width" means "as wide as the content"
+   * rather than "as wide as whatever is left of 44pt". That is the whole fix —
+   * page, total and percentage all fit, at any page number.
+   *
+   * `marginTop` is derived from the pill's own height so it stays centred on the
+   * thumb; a hand-picked offset here drifts the moment the text size changes.
    */
   badge: {
     position: 'absolute',
-    right: 18,
-    marginTop: -15,
+    right: COLUMN_W + 4,
+    marginTop: -BADGE_H / 2,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 10,
+    paddingHorizontal: 11,
     paddingVertical: 5,
     borderRadius: 999,
-    backgroundColor: 'rgba(20,20,24,0.86)',
+    backgroundColor: 'rgba(20,20,24,0.9)',
+    /* The same reasoning as the thumb's border: this floats over a document
+       whose page colour the reader chooses, and a dark pill on a black page has
+       no edge at all without it. */
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.14)',
   },
   badgeText: {
     color: '#fff',

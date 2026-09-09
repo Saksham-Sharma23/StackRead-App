@@ -287,7 +287,16 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
         // Not a dependency: PERF is a module-level constant, so it cannot
         // change for the life of the process.
         PERF,
-        inlinedPayload,
+        /*
+         * `?? undefined`, so the call says what it means.
+         *
+         * A cold mount holds `null` here, and "no cache hit" and "nothing to
+         * inline" are the same statement — but only one of them was expressible
+         * to a builder that tested for absence. Normalising at the call site
+         * makes the intent local rather than something the reader has to
+         * reconstruct from the guard at the other end.
+         */
+        inlinedPayload ?? undefined,
       ),
     [theme, initialScroll, inlinedPayload],
   )
@@ -411,6 +420,20 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
       viewerTrace.current.batches = restRef.current.length
       viewerTrace.current.images = imagesRef.current.length
       viewerTrace.current.pushedAt = now()
+      /*
+       * Clear any error the viewer reported before this content arrived.
+       *
+       * `setError` is otherwise a one-way latch: it short-circuits the whole
+       * render and unmounts the WebView, so a document that prepared perfectly
+       * well had nowhere to be delivered and the open was lost permanently.
+       * That is what turned a boot-time viewer fault into "reopen the file and
+       * it works" rather than a recoverable blip.
+       *
+       * This cannot loop. A genuinely unrenderable document re-posts `error`
+       * from the viewer, but `payload` does not change again, so `apply` does
+       * not run a second time and the error stands.
+       */
+      setError(null)
       setPayload({
         ...prepared,
         scroll: initialScroll,

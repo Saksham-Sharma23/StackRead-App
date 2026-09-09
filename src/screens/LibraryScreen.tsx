@@ -27,6 +27,7 @@ import {
 import { GroupRow } from '../components/GroupRow'
 import { ActionSheet, type SheetAction } from '../components/ActionSheet'
 import { UndoToasts } from '../components/UndoToast'
+import { NavBarScrim } from '../components/NavBarScrim'
 import { PdfCoverFactory } from '../components/PdfCoverFactory'
 import { LibrarySearch } from '../components/LibrarySearch'
 import { MoveSheetContainer } from '../components/MoveSheet'
@@ -856,6 +857,13 @@ ${result.uri}`)
         enabled={loaded && !busy && !importing}
         visibleGroups={readVisibleGroups}
       />
+
+      {/*
+        Below the toasts, above everything that scrolls: the board fades out
+        into the navigation bar, and the undo toast floats on top of the glass
+        rather than being frosted along with the content.
+      */}
+      <NavBarScrim theme={theme} />
 
       <UndoToasts theme={theme} />
 

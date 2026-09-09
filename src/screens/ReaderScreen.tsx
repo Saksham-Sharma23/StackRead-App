@@ -17,6 +17,7 @@ import { Dropdown } from '../components/Dropdown'
 import { ToolButton } from '../components/ToolButton'
 import { TocSheet } from '../components/TocSheet'
 import { ReaderSettingsSheet } from '../components/ReaderSettingsSheet'
+import { PopoverMenu, type MenuItem } from '../components/PopoverMenu'
 import { usePageNav } from '../store/pageNav'
 import { useSearch } from '../store/search'
 import { SearchBar } from '../components/SearchBar'
@@ -39,7 +40,26 @@ interface Props {
   onClose: () => void
 }
 
-type Sheet = 'none' | 'file' | 'group' | 'toc' | 'display'
+/**
+ * What is layered over the document, if anything.
+ *
+ * `'menu'` is a member for one reason worth stating: three separate behaviours
+ * already key off `sheet !== 'none'` — chrome auto-hide pauses, Android back is
+ * consumed, and immersive mode stays off. Making the overflow menu a `Sheet`
+ * value gets all three correct by construction, where a second boolean beside
+ * this one would have had to be added to each of them by hand.
+ */
+type Sheet = 'none' | 'file' | 'group' | 'toc' | 'display' | 'menu'
+
+/**
+ * Height of the top bar's content, below the status-bar inset.
+ *
+ * `8` top padding + `34` control + `10` bottom padding. Named because three
+ * things must agree on it — the bar itself, the search bar that opens beneath
+ * it, and the overflow menu that drops from it — and it was previously written
+ * as a bare `52` at one of those sites with nothing tying it to the other two.
+ */
+const TOP_BAR_H = 52
 
 /** Shared empty list, so "no chapters" is always the same reference. */
 const EMPTY_TOC: TocEntry[] = []
@@ -296,6 +316,32 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
     [groups, groupId, groupCounts, switchGroup],
   )
 
+  /**
+   * The overflow menu's contents.
+   *
+   * Chapters is conditional on exactly the same test the button used to carry,
+   * so a document that declares no TOC still offers no dead entry — the item is
+   * absent rather than disabled, because a menu of three where one never works
+   * is worse than a menu of two.
+   */
+  const menuItems = useMemo<MenuItem[]>(() => {
+    const items: MenuItem[] = [
+      {
+        key: 'search',
+        glyph: '⌕',
+        label: 'Find in document',
+        onPress: () => setSearchOpen(true),
+      },
+    ]
+
+    if (toc.length > 0) {
+      items.push({ key: 'toc', glyph: '☰', label: 'Chapters', onPress: () => setSheet('toc') })
+    }
+
+    items.push({ key: 'display', glyph: 'Aa', label: 'Display', onPress: () => setSheet('display') })
+    return items
+  }, [toc.length, setSearchOpen, setSheet])
+
   const chromeStyle = useAnimatedStyle(() => ({
     opacity: chrome.value,
     transform: [{ translateY: (1 - chrome.value) * -12 }],
@@ -322,7 +368,7 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
         />
       </View>
 
-      {/* Top bar: close · file picker · group picker · page stepper */}
+      {/* Top bar: back · file picker · group picker · overflow menu */}
       <Animated.View
         pointerEvents={chromeVisible ? 'auto' : 'none'}
         style={[styles.topBar, { paddingTop: insets.top + 8 }, chromeStyle]}
@@ -350,27 +396,20 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
           flex={1}
         />
 
-        {/* Chapters appears only for a document that declares one. */}
-        {toc.length > 0 && (
-          <ToolButton
-            glyph="☰"
-            onPress={() => setSheet('toc')}
-            accessibilityLabel="Chapters"
-            style={styles.toolBtn}
-          />
-        )}
+        {/*
+          One button for every tool.
 
+          Chapters, find and display used to sit here as three separate glyphs.
+          With the two pickers already flexing for what was left, a bar of six
+          controls left a long filename with almost no room — and the three
+          glyphs were the least-used things in it. They live behind `⋯` now,
+          which is the same affordance the board already uses for a card's and a
+          group's own menu.
+        */}
         <ToolButton
-          glyph="⌕"
-          onPress={() => setSearchOpen(!searchOpen)}
-          accessibilityLabel="Find in document"
-          style={styles.toolBtn}
-        />
-
-        <ToolButton
-          glyph="Aa"
-          onPress={() => setSheet('display')}
-          accessibilityLabel="Display settings"
+          glyph="⋯"
+          onPress={() => setSheet('menu')}
+          accessibilityLabel="More options"
           style={styles.toolBtn}
         />
       </Animated.View>
@@ -388,7 +427,7 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
         <SearchBar
           fileId={current.id}
           theme={theme}
-          topOffset={insets.top + 52}
+          topOffset={insets.top + TOP_BAR_H}
           /*
            * PDF search now runs on the pdfium text engine already in the build,
            * so the only remaining unsupported case is a build whose native
@@ -448,6 +487,24 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
         theme={theme}
         onClose={() => setSheet('none')}
       />
+
+      {/*
+        Anchored under the `⋯` button rather than presented as a sheet: these are
+        secondary tools, and a full-width sheet for three of them reads as more
+        consequential than they are.
+
+        `right` matches the bar's own `paddingHorizontal`, so the card's edge
+        lines up with the button's, and `top` clears the bar via the same
+        constant the bar is built from.
+      */}
+      <PopoverMenu
+        visible={sheet === 'menu'}
+        items={menuItems}
+        theme={theme}
+        top={insets.top + TOP_BAR_H}
+        right={10}
+        onClose={() => setSheet('none')}
+      />
     </View>
   )
 }
@@ -470,7 +527,6 @@ const styles = StyleSheet.create({
   backBtn: { width: 26, alignItems: 'center', justifyContent: 'center' },
   backGlyph: { color: '#fff', fontSize: 26, fontWeight: '400', lineHeight: 28 },
   toolBtn: { width: 30, height: 34, alignItems: 'center', justifyContent: 'center' },
-  toolGlyph: { color: '#fff', fontSize: 15, fontWeight: '600' },
   bottomBar: {
     position: 'absolute',
     bottom: 0,

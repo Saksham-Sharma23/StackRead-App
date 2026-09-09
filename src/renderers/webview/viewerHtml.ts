@@ -268,7 +268,20 @@ export function buildViewerHtml(
 <body>
 <div id="paper"></div>
 ${
-    initialPayload === undefined
+    /*
+     * `== null`, not `=== undefined`.
+     *
+     * The only caller passes `useRef(payload).current`, and on a cold open that
+     * state initialises to **`null`** rather than being absent — so the strict
+     * check let a null through, `JSON.stringify` turned it into the four
+     * characters `null`, and the boot code below found a present island holding
+     * nothing. `render(null)` then threw on `payload.mode` and the reader showed
+     * "Couldn't open this file" for every WebView format on its first open.
+     *
+     * Loose equality is the whole point here: absent and empty must behave the
+     * same, because both mean "the host has nothing to inline yet".
+     */
+    initialPayload == null
       ? ''
       : /*
          * Every < becomes the JSON escape sequence for it.
@@ -1337,6 +1350,16 @@ ${
   });
 
   function render(payload) {
+    /*
+     * Nothing to render is not an error.
+     *
+     * Every read below assumes an object, so a falsy payload used to throw on
+     * the very first property and be reported to the host as a failed open --
+     * a document that had prepared perfectly well. Returning quietly is the
+     * correct behaviour: the host still pushes content on 'boot', so a viewer
+     * that got here with nothing simply waits for the message path.
+     */
+    if (!payload) return;
     try {
       mode = payload.mode || 'paper';
       contentPages = payload.totalPages || 0;
@@ -1696,7 +1719,16 @@ ${
 
   if (initialIsland) {
     try {
-      render(JSON.parse(initialIsland.textContent || 'null'));
+      /*
+       * Parse first, then check -- do not hand the result straight on.
+       *
+       * This used to be a single nested expression whose own fallback string
+       * decoded to the one value render() could not survive. Both halves of it
+       * could yield null and neither was inspected before the call, so an
+       * island holding nothing became a thrown TypeError and a failed open.
+       */
+      var initial = JSON.parse(initialIsland.textContent || 'null');
+      if (initial) render(initial);
     } catch (e) {
       // A malformed island must not leave a blank viewer with no way back: the
       // host still has the payload and pushes it on boot when no ready follows.

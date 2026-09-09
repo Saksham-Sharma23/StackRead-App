@@ -595,6 +595,53 @@ test('no island is emitted when the host has nothing to inline', () => {
   // A cold open still gets an empty shell and the message path.
   assert.equal(island(buildViewerHtml(THEME, 0)), null)
   assert.equal(island(buildViewerHtml(THEME, 0, false)), null)
+
+  /*
+   * `null` is the case that actually shipped broken, and the two above never
+   * reached it — both omit the argument, which tests `undefined`.
+   *
+   * The only production call site is `WebViewRenderer`'s `html` memo, and what
+   * it passes on a cold open is `useRef(payload).current`, whose state
+   * initialiser returns **`null`** when there is no cache hit. The builder's
+   * guard was `=== undefined`, so that null was inlined as the four characters
+   * `null`; the viewer then found a present island holding nothing and called
+   * `render(null)`, which threw on `payload.mode`. Every WebView format failed
+   * on its first open until the file was cached by the failed attempt.
+   *
+   * Assert the value the caller sends, not the one the signature suggests.
+   */
+  assert.equal(island(buildViewerHtml(THEME, 0, false, null)), null)
+})
+
+test('a null island is never handed to render', () => {
+  /*
+   * Belt and braces for the bug above, at the other end of the chain.
+   *
+   * Even with no island emitted, the boot code must not call `render` with
+   * whatever `JSON.parse` returned — its own fallback (`|| 'null'`) can produce
+   * exactly the value `render` cannot survive. This asserts the parse result is
+   * inspected before the call rather than passed straight through.
+   */
+  const js = viewerScript()
+
+  assert.doesNotMatch(
+    js,
+    /render\(JSON\.parse\(/,
+    'the island is parsed straight into render() with nothing checking the result',
+  )
+  assert.match(js, /if \(initial\) render\(initial\)/)
+
+  /*
+   * And `render` itself refuses a falsy payload, so no other caller can
+   * reintroduce the same throw. Asserted as an ordering rather than a substring:
+   * the property is that the guard runs *before* the first property read, which
+   * a bare `includes` would not catch if the two were ever swapped.
+   */
+  const render = emittedFunction('render')
+  const guard = render.indexOf('if (!payload) return;')
+  const firstRead = render.indexOf('payload.mode')
+  assert.ok(guard >= 0, 'render() no longer guards against a falsy payload')
+  assert.ok(guard < firstRead, 'render() reads a property before guarding the payload')
 })
 
 test('an inlined payload round-trips through the island', () => {
