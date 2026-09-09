@@ -240,7 +240,20 @@ jobs:
           fi
           echo "Release-signed OK."
 
+      # Uploaded even when verification fails.
+      #
+      # A four-ABI release build is 30-50 minutes, and the runner is destroyed
+      # the moment the job ends — so a failure in the *verification* step used
+      # to throw away a perfectly good APK that had already been built, with no
+      # way to retrieve it. The artefact is evidence either way: if the check
+      # rejected it, being able to inspect the binary is exactly what you need.
+      #
+      # `success() || failure()` rather than `always()`, so a cancelled run does
+      # not spend minutes uploading 114 MB nobody asked for. Attaching to a
+      # Release is still gated on success — see the step below, whose bare `if`
+      # carries an implicit `success()`.
       - name: Upload artefact
+        if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
           name: stackread-release-${{ inputs.format || 'apk' }}
