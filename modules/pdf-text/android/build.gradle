@@ -1,0 +1,50 @@
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+group = 'expo.modules.pdftext'
+version = '1.0.0'
+
+def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
+apply from: expoModulesCorePlugin
+applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
+useExpoPublishing()
+
+android {
+  namespace "expo.modules.pdftext"
+  defaultConfig {
+    minSdkVersion 24
+  }
+  compileSdkVersion rootProject.ext.has('compileSdkVersion') ? rootProject.ext.get('compileSdkVersion') : 36
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+  kotlinOptions {
+    jvmTarget = "17"
+  }
+}
+
+repositories {
+  mavenCentral()
+  // pdfiumandroid 1.0.32 is published here rather than to Maven Central, which
+  // only carries up to 1.0.20. This is the same repository react-native-pdf
+  // declares, so nothing new is being trusted.
+  maven { url 'https://jitpack.io' }
+}
+
+dependencies {
+  /*
+   * The exact version react-native-pdf already resolves.
+   *
+   * This is deliberately not a range and not a newer release: the AAR is
+   * *already* in the APK as a transitive dependency of the PDF renderer, so
+   * pinning the same coordinate means Gradle reuses one copy rather than
+   * resolving two. A mismatch here would either duplicate the native pdfium
+   * binary or silently upgrade what the renderer runs against.
+   *
+   * If react-native-pdf ever bumps its pdfium, this line has to move with it.
+   */
+  implementation 'io.legere:pdfiumandroid:1.0.32'
+  implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
+}

@@ -1,0 +1,7 @@
+{
+  "name": "pdf-text",
+  "version": "1.0.0",
+  "description": "PDF text extraction and search over the pdfium engine already in the build",
+  "main": "src/index.ts",
+  "private": true
+}

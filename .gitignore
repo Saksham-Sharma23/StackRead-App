@@ -1,5 +1,5 @@
 # Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
-
+docs/
 # dependencies
 node_modules/
 
@@ -39,3 +39,44 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Local Expo modules build their own Android library. The `/android` rule above
+# is deliberately root-anchored, so it does not reach these — but the output is
+# just as generated, and it is 60-odd files that churn on every build. The
+# module's *source* (src/, android/src/, build.gradle, expo-module.config.json)
+# stays tracked: `modules/pdf-text` is a real dependency of the PDF text search.
+modules/*/android/build/
+modules/*/android/.gradle/
+modules/*/build/
+
+# Machine-specific SDK path. Written by Android Studio and by some Gradle
+# invocations; committing it breaks the build on every other machine.
+local.properties
+
+# Build outputs. Never in git — a signed APK in a public repo hands out a
+# binary that Android will accept as an authentic update.
+*.apk
+*.aab
+*.aar
+
+# OS and editor cruft
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*.swp
+*~
+
+# Release signing material — never commit. Whoever holds the keystore controls
+# app updates: anyone with a copy can sign an APK that Android accepts as an
+# authentic StackRead update, and the identity cannot be rotated afterwards
+# without breaking every installed copy.
+credentials/*
+!credentials/README.md
+android/app/*.keystore
+!android/app/debug.keystore
+*.keystore
+*.jks
+
+# Signing passwords are read from the environment (see credentials/README.md);
+# a generated gradle.properties must never carry them into a commit.
+android/gradle.properties

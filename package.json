@@ -1,22 +1,62 @@
 {
-  "name": "scaffold",
-  "version": "1.0.0",
+  "name": "stackread",
+  "version": "0.1.0",
   "main": "index.ts",
   "dependencies": {
+    "buffer": "^6.0.3",
     "expo": "~57.0.18",
+    "expo-dev-client": "~57.0.16",
+    "expo-document-picker": "~57.0.1",
+    "expo-file-system": "~57.0.6",
+    "expo-haptics": "~57.0.2",
+    "expo-image": "~57.0.3",
+    "expo-image-manipulator": "~57.0.14",
+    "expo-navigation-bar": "~57.0.2",
+    "expo-sharing": "~57.0.16",
+    "expo-splash-screen": "~57.0.8",
+    "expo-sqlite": "~57.0.2",
     "expo-status-bar": "~57.0.1",
+    "fast-xml-parser": "^5.11.1",
+    "fflate": "^0.8.3",
+    "mammoth": "^1.12.2",
+    "nanoid": "^6.0.1",
     "react": "19.2.3",
-    "react-native": "0.86.3"
+    "react-native": "0.86.3",
+    "react-native-blob-util": "^0.24.10",
+    "react-native-gesture-handler": "~2.32.0",
+    "react-native-mmkv": "^4.3.2",
+    "react-native-pdf": "^7.0.5",
+    "react-native-reanimated": "4.5.1",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-view-shot": "5.1.0",
+    "react-native-webview": "13.16.1",
+    "react-native-worklets": "0.10.1",
+    "thumbhash": "^0.1.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
     "typescript": "~6.0.3"
   },
   "scripts": {
-    "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
-    "web": "expo start --web"
+    "start": "expo start --dev-client",
+    "android": "expo run:android --device",
+    "ios": "expo run:ios --device",
+    "web": "expo start --web",
+    "prebuild": "expo prebuild --platform android && node scripts/tune-gradle.mjs && node scripts/setup-signing.mjs",
+    "typecheck": "tsc --noEmit",
+    "doctor": "expo-doctor",
+    "tune-gradle": "node scripts/tune-gradle.mjs",
+    "apk": "node scripts/release-check.mjs && node scripts/tune-gradle.mjs --release && node scripts/setup-signing.mjs && cd android && gradlew.bat assembleRelease",
+    "apk:dev": "node scripts/tune-gradle.mjs && node scripts/setup-signing.mjs && cd android && gradlew.bat assembleRelease",
+    "test": "node --test --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types \"src/**/*.test.ts\"",
+    "check": "npm run typecheck && npm run test"
   },
-  "private": true
+  "private": true,
+  "expo": {
+    "autolinking": {
+      "nativeModulesDir": "./modules"
+    }
+  }
 }

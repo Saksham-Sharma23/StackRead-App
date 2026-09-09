@@ -1,0 +1,218 @@
+# Builds a signed release APK on GitHub's runners instead of a local machine.
+#
+# ## Why this exists
+#
+# A release build needs all four ABIs, R8 minification and resource shrinking
+# — the settings `scripts/tune-gradle.mjs --release` applies. On an 8GB machine
+# that combination exhausts RAM and clang is killed mid-compile, which surfaces
+# as a ~23-minute failure that looks like a toolchain bug. GitHub's runners have
+# 16GB and 4 cores, so the low-memory compromises that dev mode exists for are
+# simply unnecessary here.
+#
+# ## What it does NOT change
+#
+# The build is the same one `npm run apk` runs locally: the same scripts, the
+# same order, the same assertions. `release-check.mjs` still refuses a build
+# that would ship wrong. This workflow supplies the environment those scripts
+# already read from — it does not reimplement them, because a CI build that
+# diverges from the local one is a CI build that tests something else.
+#
+# ## Triggers
+#
+#   - A `v*` tag  → a real release build, attached to a GitHub Release
+#   - Manual      → same build, artefact only, for testing the pipeline
+#
+# Deliberately NOT on every push to master: a full four-ABI R8 build takes
+# 20-40 minutes, and running one per commit wastes the runner minutes that make
+# this worth doing at all. Tag when you mean to ship.
+
+name: Android release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      format:
+        description: 'APK (direct install, ~120-160MB) or AAB (Play Store, ~45-60MB download)'
+        type: choice
+        options: [apk, aab]
+        default: apk
+
+# Cancels a superseded run: pushing a fixed tag should not leave the broken
+# build still burning runner minutes.
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # A cold four-ABI R8 build is slow. The default 360 is generous enough that
+    # a genuinely hung build would burn six hours before anyone noticed.
+    timeout-minutes: 60
+
+    permissions:
+      contents: write # only to attach the APK to a Release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Gradle 9.3.1 (see android/gradle/wrapper) requires JDK 17+, and RN 0.86
+      # targets 17. Pinning it here rather than relying on the runner's default,
+      # which changes without notice.
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # `npm ci` not `npm install`: the lockfile is the point of running this in
+      # CI at all, and `install` would silently accept a drifted dependency tree.
+      - name: Install dependencies
+        run: npm ci
+
+      # Passed through `env`, never interpolated into the shell command itself.
+      # `${{ secrets.X }}` inside a `run:` block bakes the value into the command
+      # line, where it can surface in a process listing or a shell trace even
+      # though GitHub masks it in the log output.
+      - name: Restore the release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.STACKREAD_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STACKREAD_STORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::STACKREAD_KEYSTORE_BASE64 is not set. See docs/CI_RELEASE.md."
+            exit 1
+          fi
+          mkdir -p credentials
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > credentials/stackread-release.keystore
+          # A truncated or mis-pasted secret decodes to garbage that only fails
+          # much later, during signing, as an opaque Gradle error. Opening it
+          # here turns that into a clear failure in the first minute.
+          keytool -list -keystore credentials/stackread-release.keystore \
+            -storepass "$STORE_PASSWORD" > /dev/null \
+            || { echo "::error::Keystore did not open — check the base64 secret and the store password."; exit 1; }
+          echo "keystore restored and opened successfully"
+
+      # The same gate that runs before a local release build. Doing this BEFORE
+      # the expensive steps means a missing secret fails in under a minute
+      # rather than after a 40-minute compile.
+      - name: Verify the release is shippable
+        env:
+          STACKREAD_STORE_PASSWORD: ${{ secrets.STACKREAD_STORE_PASSWORD }}
+        run: node scripts/release-check.mjs
+
+      # Typecheck and tests. A release built from code that does not pass its
+      # own gate is not a release, and this is the cheapest place to find out.
+      - name: Typecheck and test
+        run: npm run check
+
+      # Gradle's own cache. The NDK/CMake work dominates a cold build, so this
+      # turns a repeat run into a fraction of the first one.
+      #
+      # Keyed on package-lock.json, NOT on android/**: that directory is
+      # generated by the prebuild step below, so at restore time it does not
+      # exist yet and a key hashing it would hash nothing.
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      # `android/` is gitignored and generated, so CI builds it from scratch.
+      # This also runs tune-gradle (dev mode) and setup-signing via the npm
+      # script; the release-mode tuning is re-applied below, which is exactly
+      # what the local `apk` script does.
+      - name: Prebuild native project
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Apply release build settings
+        run: node scripts/tune-gradle.mjs --release
+
+      # Passwords reach Gradle through the environment, never through
+      # gradle.properties — the same contract setup-signing.mjs documents. A
+      # secret written to a file in the workspace would be one `actions/upload`
+      # away from publication.
+      - name: Install signing config
+        env:
+          STACKREAD_STORE_PASSWORD: ${{ secrets.STACKREAD_STORE_PASSWORD }}
+          STACKREAD_KEY_PASSWORD: ${{ secrets.STACKREAD_KEY_PASSWORD }}
+          STACKREAD_KEY_ALIAS: ${{ secrets.STACKREAD_KEY_ALIAS }}
+        run: node scripts/setup-signing.mjs
+
+      # A tag always builds an APK, because a Release attachment people install
+      # directly has to be one. The AAB path is for a Play Store upload, chosen
+      # manually — Play splits it per device, which is what turns a ~150MB
+      # universal APK into a ~50MB download.
+      - name: Build release
+        id: build
+        env:
+          STACKREAD_STORE_PASSWORD: ${{ secrets.STACKREAD_STORE_PASSWORD }}
+          STACKREAD_KEY_PASSWORD: ${{ secrets.STACKREAD_KEY_PASSWORD }}
+          STACKREAD_KEY_ALIAS: ${{ secrets.STACKREAD_KEY_ALIAS }}
+        working-directory: android
+        run: |
+          if [ "${{ inputs.format }}" = "aab" ]; then
+            ./gradlew bundleRelease --no-daemon --stacktrace
+            echo "path=android/app/build/outputs/bundle/release" >> "$GITHUB_OUTPUT"
+            echo "glob=*.aab" >> "$GITHUB_OUTPUT"
+          else
+            ./gradlew assembleRelease --no-daemon --stacktrace
+            echo "path=android/app/build/outputs/apk/release" >> "$GITHUB_OUTPUT"
+            echo "glob=*.apk" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Asserts the APK is not debug-signed. `setup-signing.mjs` falls back to
+      # the debug keystore when credentials are absent, which is right for a
+      # fresh clone and catastrophic for a shipped build: Android refuses to
+      # update a debug-signed install with a properly signed one. release-check
+      # guards the inputs; this guards the output.
+      - name: Verify the build is release-signed
+        run: |
+          ART=$(find "${{ steps.build.outputs.path }}" -name '${{ steps.build.outputs.glob }}' | head -1)
+          if [ -z "$ART" ]; then
+            echo "::error::No build output found — the Gradle task produced nothing."
+            exit 1
+          fi
+          echo "Artefact: $ART"
+          ls -lh "$ART"
+          SIGNER=$(keytool -printcert -jarfile "$ART" | grep -m1 'Owner:' || true)
+          echo "$SIGNER"
+          if echo "$SIGNER" | grep -q 'CN=Android Debug'; then
+            echo "::error::Build is DEBUG-signed and must not be shipped."
+            exit 1
+          fi
+          if [ -z "$SIGNER" ]; then
+            echo "::error::Could not read a signature — refusing to publish an unverified build."
+            exit 1
+          fi
+
+      - name: Upload artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stackread-release-${{ inputs.format || 'apk' }}
+          path: ${{ steps.build.outputs.path }}/${{ steps.build.outputs.glob }}
+          # Long enough to install and test without keeping signed binaries
+          # around indefinitely.
+          retention-days: 30
+
+      - name: Attach to the Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.build.outputs.path }}/${{ steps.build.outputs.glob }}
+          generate_release_notes: true

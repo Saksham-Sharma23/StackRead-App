@@ -1,0 +1,47 @@
+{
+  // This is a React Native project. The android/ directory is touched rarely and
+  // is built by Gradle on the command line, never by an in-editor language server.
+  // Left at their defaults, the Java/Gradle extensions start six JVMs that idled
+  // at ~2.8 GB - a 1 GB embedded Kotlin compiler among them - purely to provide
+  // IntelliSense for files nobody edits in this workspace.
+  //
+  // Re-enable these individually (not the whole file) if you start doing real
+  // native Android work in android/app/src/main/java.
+
+  // Stops the Gradle build server. This is the single largest win: it is what
+  // spawns kotlin-compiler-embeddable, the 1 GB process in the tree.
+  "gradle.nestedProjects": false,
+  "java.import.gradle.enabled": false,
+  "java.import.gradle.wrapper.enabled": false,
+  "java.import.maven.enabled": false,
+
+  // Without this the Red Hat server still indexes android/ on every window open.
+  "java.autobuild.enabled": false,
+  "java.maxConcurrentBuilds": 1,
+  "java.import.projectSelection": "manual",
+
+  // Red Hat's server ignores the settings above if it decides the folder is a
+  // Java project. This tells it there is nothing here to import.
+  "java.project.importOnFirstTimeStartup": "disabled",
+  "java.configuration.updateBuildConfiguration": "disabled",
+
+  // Cap the language server heap so a stray index cannot balloon again.
+  "java.jdt.ls.vmargs": "-XX:+UseSerialGC -Xmx512m -XX:MaxMetaspaceSize=256m",
+
+  // Keep the file watcher off the build output. These directories churn on every
+  // Gradle run and Metro bundle, and watching them is pure overhead.
+  "files.watcherExclude": {
+    "**/android/build/**": true,
+    "**/android/.gradle/**": true,
+    "**/android/app/build/**": true,
+    "**/node_modules/**": true,
+    "**/.expo/**": true
+  },
+  "search.exclude": {
+    "**/android/build": true,
+    "**/android/.gradle": true,
+    "**/android/app/build": true,
+    "**/node_modules": true,
+    "**/.expo": true
+  }
+}

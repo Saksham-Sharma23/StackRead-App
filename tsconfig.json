@@ -1,6 +1,22 @@
 {
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "strict": true
-  }
+    "strict": true,
+    // The tests run on Node's own runner via `--experimental-strip-types`,
+    // which resolves the real `.ts` files rather than compiled output — so the
+    // imports must carry the extension the runtime actually needs.
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    // Dead code is invisible without these: an unused local reads as
+    // intentional to every reader after the person who orphaned it. Turned on
+    // before the deletions so the compiler produces the worklist rather than a
+    // human eyeballing it.
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    // `node` is for the test files only; the app itself never touches Node
+    // built-ins. It is pulled in transitively already, so this adds no
+    // dependency.
+    "types": ["node"]
+  },
+  "include": ["**/*.ts", "**/*.tsx", "src/untyped-modules.d.ts"]
 }
