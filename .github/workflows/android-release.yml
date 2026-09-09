@@ -59,17 +59,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Node 24, matching the version in README's requirements. NOT 20: the test
+      # script runs TypeScript directly via `--experimental-strip-types`, which
+      # does not exist before 22.6 — on 20 it fails with `bad option` before a
+      # single test runs.
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       # Gradle 9.3.1 (see android/gradle/wrapper) requires JDK 17+, and RN 0.86
       # targets 17. Pinning it here rather than relying on the runner's default,
       # which changes without notice.
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
