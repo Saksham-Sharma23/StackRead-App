@@ -1,0 +1,184 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: Roboto, "Helvetica Neue", sans-serif; }
+    a { color: #4c8dff; } a:hover { color: #7fb0ff; }
+    .h { font: 600 15px/20px Roboto, sans-serif; color: #f3f3f6; letter-spacing: -0.1px; }
+    .sub { font: 400 12px/17px Roboto, sans-serif; color: #6b6e78; margin-top: 3px; }
+    .k { font: 500 11px/14px "Roboto Mono", monospace; color: #a0a2ad; }
+    .was { font: 400 11px/15px Roboto, sans-serif; color: #ff8a80; }
+    .card { background: #15171e; border: 1px solid #2b2f3b; border-radius: 14px; padding: 20px; }
+  </style>
+</helmet>
+
+<div style="width: 1000px; height: 900px; background: #0b0c11; padding: 32px; box-sizing: border-box;">
+
+  <div style="font: 700 24px/30px Roboto, sans-serif; letter-spacing: -0.4px; color: #f3f3f6;">Design tokens</div>
+  <div class="sub" style="margin-bottom: 20px;">Four new scales, one motion addition. Red is what exists today.</div>
+
+  <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px;">
+
+    <!-- SPACING -->
+    <div class="card">
+      <div class="h">Space — a 4pt grid</div>
+      <div class="sub" style="margin-bottom: 14px;">Today: <span class="was">19 distinct values between 1 and 28</span>. Every integer from 2 to 16 is in use except 17.</div>
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <sc-for list="{{space}}" as="s" hint-placeholder-count="7">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <div class="k" style="width: 34px;">{{s.name}}</div>
+            <div style="height: 10px; border-radius: 2px; background: #4c8dff; width: {{s.w}};"></div>
+            <div class="k" style="width: 26px; color: #6b6e78;">{{s.px}}</div>
+            <div class="was">{{s.was}}</div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <!-- TYPE -->
+    <div class="card" style="grid-row: span 2;">
+      <div class="h">Type — 7 roles</div>
+      <div class="sub" style="margin-bottom: 14px;">Today: <span class="was">16 sizes across 25 size/weight pairs</span>; 13, 13.5 and 14 all serve the same role; lineHeight is set on only 5 of 25.</div>
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <sc-for list="{{type}}" as="t" hint-placeholder-count="7">
+          <div style="display: flex; align-items: baseline; gap: 14px;">
+            <div class="k" style="width: 58px; flex-shrink: 0;">{{t.name}}</div>
+            <div style="flex: 1; min-width: 0; font: {{t.font}}; letter-spacing: {{t.ls}}; color: #f3f3f6;">{{t.sample}}</div>
+            <div class="k" style="width: 92px; flex-shrink: 0; text-align: right; color: #6b6e78;">{{t.spec}}</div>
+          </div>
+          <div class="was" style="margin: -10px 0 0 72px;">{{t.was}}</div>
+        </sc-for>
+      </div>
+      <div class="sub" style="margin-top: 16px; padding-top: 14px; border-top: 1px solid #2b2f3b;">
+        Weight carries meaning again: 400 body · 500 label · 600 heading · 700 display and badges.
+        Dropped: <span class="was">650</span> (Roboto has no such face on Android, it snaps to 700)
+        and <span class="was">300</span> (Roboto-Light is absent on some builds, so the “+” renders heavier there).
+      </div>
+    </div>
+
+    <!-- RADIUS -->
+    <div class="card">
+      <div class="h">Radius — 6 steps, concentric</div>
+      <div class="sub" style="margin-bottom: 14px;">Today: <span class="was">12 distinct radii</span>, and nothing nests correctly.</div>
+      <div style="display: flex; align-items: flex-end; gap: 12px; margin-bottom: 16px;">
+        <sc-for list="{{radius}}" as="r" hint-placeholder-count="6">
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 6px;">
+            <div style="width: 52px; height: 52px; background: #1f222c; border: 1px solid #2b2f3b; border-radius: {{r.px}};"></div>
+            <div class="k">{{r.name}}</div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display: flex; align-items: center; gap: 16px; padding-top: 14px; border-top: 1px solid #2b2f3b;">
+        <div style="width: 96px; height: 96px; border-radius: 14px; border: 1px solid #2b2f3b; background: #15171e; padding: 8px; box-sizing: border-box;">
+          <div style="width: 100%; height: 100%; border-radius: 6px; background: #1f222c;"></div>
+        </div>
+        <div>
+          <div style="font: 500 12px/17px Roboto, sans-serif; color: #a0a2ad;">inner = outer − padding</div>
+          <div class="sub">A card at 14 with 8pt padding gives a 6pt preview.
+            Today it uses <span class="was">9</span>, and the two badges inside it use <span class="was">6 and 4</span>.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PRESS -->
+    <div class="card">
+      <div class="h">Press — 3 behaviours</div>
+      <div class="sub" style="margin-bottom: 14px;">Today: <span class="was">0.85, 0.86, 0.88, 0.92, 0.97 and 1</span> — and <span class="k" style="color:#a0a2ad;">Scale.press</span> (0.97) is used by exactly one component.</div>
+      <div style="display: flex; flex-direction: column; gap: 12px;">
+        <sc-for list="{{press}}" as="p" hint-placeholder-count="3">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <div class="k" style="width: 64px;">{{p.name}}</div>
+            <div style="font: 400 12px/17px Roboto, sans-serif; color: #a0a2ad; flex: 1;">{{p.use}}</div>
+            <div class="was" style="width: 128px; text-align: right;">{{p.was}}</div>
+          </div>
+        </sc-for>
+      </div>
+      <div class="sub" style="margin-top: 14px; padding-top: 14px; border-top: 1px solid #2b2f3b;">
+        Row tint moves to <span class="k" style="color:#a0a2ad;">Timing.tint</span> (100ms) — it already exists in
+        <span class="k" style="color:#a0a2ad;">motion.ts</span> and is <span class="was">never used</span>; both sheet tints
+        currently run on a 350ms spring, interpolating from <span class="was">'transparent'</span>, which passes through
+        transparent black on Android and darkens the row mid-press.
+      </div>
+    </div>
+
+    <!-- MENU BUTTON + TARGETS -->
+    <div class="card">
+      <div class="h">One menu button, two surfaces</div>
+      <div class="sub" style="margin-bottom: 16px;">Today <span class="was">⋯ ships at 24/700, 18/700, 15/700 and 15/600</span> in four containers — two with no press feedback at all.</div>
+      <div style="display: flex; align-items: center; gap: 28px; margin-bottom: 18px;">
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
+          <div style="width: 32px; height: 32px; border-radius: 16px; display: flex; align-items: center; justify-content: center;">
+            <svg width="16" height="16" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.4" fill="#a0a2ad"/><circle cx="12" cy="12" r="2.4" fill="#a0a2ad"/><circle cx="19" cy="12" r="2.4" fill="#a0a2ad"/></svg>
+          </div>
+          <div class="k">flat</div>
+        </div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
+          <div style="width: 52px; height: 52px; border-radius: 6px; background: #f7f4ec; display: flex; align-items: center; justify-content: center;">
+            <div style="width: 28px; height: 28px; border-radius: 14px; background: rgba(8,9,13,0.72); border: 1px solid rgba(255,255,255,0.18); display: flex; align-items: center; justify-content: center;">
+              <svg width="15" height="15" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5" fill="#fff"/><circle cx="12" cy="12" r="2.5" fill="#fff"/><circle cx="19" cy="12" r="2.5" fill="#fff"/></svg>
+            </div>
+          </div>
+          <div class="k">over</div>
+        </div>
+        <div style="flex: 1; font: 400 12px/17px Roboto, sans-serif; color: #a0a2ad;">
+          The <span class="k" style="color:#a0a2ad;">over</span> surface is the fix for a ⋯ disappearing on a white
+          book cover: an opaque scrim plus a hairline holds against any thumbnail, light or dark.
+        </div>
+      </div>
+      <div style="padding-top: 14px; border-top: 1px solid #2b2f3b;">
+        <div style="font: 500 12px/17px Roboto, sans-serif; color: #a0a2ad; margin-bottom: 8px;">Hit — 44pt minimum, hitSlop derived</div>
+        <div class="sub">Six targets are under it today:
+          <span class="was">“show more” 26 · UNDO 31 · search clear 28×36 · empty-state CTA 38 · search result row 39 · group ⋯ 41</span>.
+          The two worst are also transient, which is the hardest kind to hit.
+          hitSlop is currently 6, 8, 10 or 12 with no rule; it becomes <span class="k" style="color:#a0a2ad;">(44 − box) / 2</span>.</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"$preview":{"width":1000,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      space: [
+        { name: 'xs',  w: '4px',  px: '4',  was: 'was 1 · 2 · 3 · 4' },
+        { name: 'sm',  w: '8px',  px: '8',  was: 'was 5 · 6 · 7 · 8 · 9' },
+        { name: 'md',  w: '12px', px: '12', was: 'was 10 · 11 · 12 · 13' },
+        { name: 'lg',  w: '16px', px: '16', was: 'was 14 · 15 · 16 · 18' },
+        { name: 'xl',  w: '20px', px: '20', was: 'sheet gutters' },
+        { name: 'xxl', w: '24px', px: '24', was: 'was 22 · 24' },
+        { name: 'huge',w: '32px', px: '32', was: 'was 28' },
+      ],
+      radius: [
+        { name: 'xs 4', px: '4px' }, { name: 'sm 6', px: '6px' }, { name: 'md 10', px: '10px' },
+        { name: 'lg 14', px: '14px' }, { name: 'xl 20', px: '20px' }, { name: 'pill', px: '999px' },
+      ],
+      type: [
+        { name: 'display', font: '700 28px/34px Roboto, sans-serif', ls: '-0.5px', sample: 'StackRead', spec: '28 / 700 / 34', was: 'replaces 30 / 700' },
+        { name: 'title',   font: '600 20px/26px Roboto, sans-serif', ls: '-0.3px', sample: 'A board, not a folder', spec: '20 / 600 / 26', was: 'replaces 19/700 · 20/600 · 17/700' },
+        { name: 'heading', font: '600 17px/22px Roboto, sans-serif', ls: '-0.2px', sample: 'Thesis references', spec: '17 / 600 / 22', was: 'replaces 17/600 · 16/600' },
+        { name: 'body',    font: '400 15px/20px Roboto, sans-serif', ls: '0',      sample: 'Move to group…', spec: '15 / 400 / 20', was: 'replaces 16 · 15 across four sheets' },
+        { name: 'label',   font: '500 13px/18px Roboto, sans-serif', ls: '0',      sample: '26 files · 13 groups', spec: '13 / 500 / 18', was: 'replaces 13 · 13.5 · 14' },
+        { name: 'caption', font: '400 12px/16px Roboto, sans-serif', ls: '0',      sample: 'Bhagavad-gita-Swami…', spec: '12 / 400 / 16', was: 'replaces 12 · 9.5' },
+        { name: 'micro',   font: '700 11px/14px Roboto, sans-serif', ls: '0.4px',  sample: 'EPUB', spec: '11 / 700 / 14', was: 'replaces 12/700 and 10/700 badges' },
+      ],
+      press: [
+        { name: 'press',   use: 'Large surfaces — cards, tiles', was: 'was 0.97' },
+        { name: 'control', use: 'Icon buttons, steppers, swatches', was: 'was 0.85 / 0.86 / 0.88 / 0.92' },
+        { name: 'tint',    use: 'Full-width rows — colour only, no scale', was: 'was scale 1 + a 350ms spring' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,169 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: Roboto, "Helvetica Neue", sans-serif; }
+    a { color: #4c8dff; } a:hover { color: #7fb0ff; }
+    .col { font: 600 13px/18px Roboto, sans-serif; letter-spacing: .3px; text-transform: uppercase; }
+    .note { font: 400 12px/17px Roboto, sans-serif; color: #6b6e78; margin-top: 10px; }
+    .was { color: #ff8a80; }
+    .good { color: #6fd08c; }
+    .doc { font: 400 13px/22px Georgia, serif; color: #6f6a62; padding: 14px 16px 0; }
+  </style>
+</helmet>
+
+<div style="width: 920px; height: 660px; background: #0b0c11; padding: 24px; box-sizing: border-box;">
+  <div style="font: 700 24px/30px Roboto, sans-serif; letter-spacing: -0.4px; color: #f3f3f6;">Reader chrome</div>
+  <div style="font: 400 12px/17px Roboto, sans-serif; color: #6b6e78; margin: 3px 0 20px;">Same file, same group name, both bars at the device's real 411dp width.</div>
+
+  <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 50px;">
+
+    <!-- ================= TODAY ================= -->
+    <div>
+      <div class="col was" style="margin-bottom: 10px;">Today</div>
+
+      <div style="width: 411px; border-radius: 8px; overflow: hidden; background: #f4ecd8;">
+        <!-- top bar -->
+        <div style="display: flex; align-items: center; gap: 9px; padding: 8px 10px 10px; background: rgba(0,0,0,0.82);">
+          <div style="width: 26px; display: flex; align-items: center; justify-content: center;">
+            <svg width="14" height="26" viewBox="0 0 14 26" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 5 L4 13 L10 21"/></svg>
+          </div>
+          <div style="display: flex; align-items: center; gap: 7px; flex: 1.35; min-width: 0;">
+            <div style="font: 500 12px/16px Roboto, sans-serif; color: rgba(255,255,255,0.6);">File</div>
+            <div style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 8px 0 11px;
+                        border-radius: 8px; border: 1px solid rgba(255,255,255,0.22); background: rgba(255,255,255,0.07);">
+              <div style="flex: 1; min-width: 0; font: 500 13px/17px Roboto, sans-serif; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Orbital Sil…</div>
+              <svg width="9" height="6" viewBox="0 0 10 6" fill="none" stroke="rgba(255,255,255,0.7)" stroke-width="1.4" stroke-linecap="round"><path d="M1 1 L5 5 L9 1"/></svg>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0;">
+            <div style="font: 500 12px/16px Roboto, sans-serif; color: rgba(255,255,255,0.6);">Group</div>
+            <div style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 8px 0 11px;
+                        border-radius: 8px; border: 1px solid rgba(255,255,255,0.22); background: rgba(255,255,255,0.07);">
+              <div style="flex: 1; min-width: 0; font: 500 13px/17px Roboto, sans-serif; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Sci-…</div>
+              <svg width="9" height="6" viewBox="0 0 10 6" fill="none" stroke="rgba(255,255,255,0.7)" stroke-width="1.4" stroke-linecap="round"><path d="M1 1 L5 5 L9 1"/></svg>
+            </div>
+          </div>
+          <div style="width: 30px; height: 34px; display: flex; align-items: center; justify-content: center;">
+            <svg width="15" height="15" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.4" fill="#fff"/><circle cx="12" cy="12" r="2.4" fill="#fff"/><circle cx="19" cy="12" r="2.4" fill="#fff"/></svg>
+          </div>
+        </div>
+
+        <!-- search bar -->
+        <div style="display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: rgba(0,0,0,0.9);">
+          <div style="flex: 1; font: 400 15px/18px Roboto, sans-serif; color: #fff; padding: 6px 10px; border-radius: 8px; background: rgba(255,255,255,0.1);">desert</div>
+          <div style="min-width: 52px; text-align: right; font: 400 13px/18px Roboto, sans-serif; font-variant-numeric: tabular-nums; color: rgba(255,255,255,0.7);">3/17</div>
+          <div style="width: 30px; height: 34px; display: flex; align-items: center; justify-content: center;">
+            <svg width="12" height="24" viewBox="0 0 14 26" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round"><path d="M10 5 L4 13 L10 21"/></svg>
+          </div>
+          <div style="width: 30px; height: 34px; display: flex; align-items: center; justify-content: center;">
+            <svg width="12" height="24" viewBox="0 0 14 26" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round"><path d="M4 5 L10 13 L4 21"/></svg>
+          </div>
+          <div style="width: 30px; height: 34px; display: flex; align-items: center; justify-content: center;">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round"><path d="M3 3 L13 13 M13 3 L3 13"/></svg>
+          </div>
+        </div>
+
+        <div class="doc" style="height: 132px;">
+          …the pure Language of the World. It required no explanation, just as the universe
+          needs none as it travels through endless time, in the silence of the
+          <span style="background: rgba(255,214,10,0.42); border-radius: 2px;">desert</span>. He was more certain of it
+          than of anything in the <span style="background: rgba(255,159,10,0.85); border-radius: 2px;">desert</span> world.
+        </div>
+      </div>
+
+      <div class="note">
+        The <span class="was">“File” and “Group” captions eat 22 and 36pt</span>, leaving the group value about
+        <span class="was">54pt — roughly 8 characters</span>. Back is 26/400 while ⋯ is 15/600 at the other end,
+        an 11pt mismatch, and back is the only control with <span class="was">no declared height</span> (28 in a 34pt row).
+        Search steps are 24/400 next to a 16/600 close.
+      </div>
+      <div class="note">
+        In the document, the non-current match is <span class="was">42% yellow — about 1.2 : 1 against the page</span>,
+        and <span class="was">color: inherit</span> leaves the text unchanged. One match reads; the rest are a faint wash.
+      </div>
+    </div>
+
+    <!-- ================= PROPOSED ================= -->
+    <div>
+      <div class="col good" style="margin-bottom: 10px;">Proposed</div>
+
+      <div style="width: 411px; border-radius: 8px; overflow: hidden; background: #f4ecd8;">
+        <!-- top bar -->
+        <div style="display: flex; align-items: center; gap: 12px; padding: 8px 16px 10px; background: rgba(0,0,0,0.82);">
+          <div style="width: 32px; height: 32px; border-radius: 16px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+            <svg width="12" height="22" viewBox="0 0 14 26" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 5 L4 13 L10 21"/></svg>
+          </div>
+          <div style="flex: 1.35; min-width: 0; display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 10px 0 12px;
+                      border-radius: 10px; border: 1px solid rgba(255,255,255,0.24); background: rgba(255,255,255,0.09);">
+            <div style="flex: 1; min-width: 0; font: 500 13px/18px Roboto, sans-serif; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Orbital Silence</div>
+            <svg width="10" height="6" viewBox="0 0 10 6" fill="none" stroke="rgba(255,255,255,0.7)" stroke-width="1.5" stroke-linecap="round"><path d="M1 1 L5 5 L9 1"/></svg>
+          </div>
+          <div style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 10px 0 12px;
+                      border-radius: 10px; border: 1px solid rgba(255,255,255,0.16); background: rgba(255,255,255,0.05);">
+            <div style="flex: 1; min-width: 0; font: 500 13px/18px Roboto, sans-serif; color: rgba(255,255,255,0.82); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Sci-fi shorts</div>
+            <svg width="10" height="6" viewBox="0 0 10 6" fill="none" stroke="rgba(255,255,255,0.7)" stroke-width="1.5" stroke-linecap="round"><path d="M1 1 L5 5 L9 1"/></svg>
+          </div>
+          <div style="width: 32px; height: 32px; border-radius: 16px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+            <svg width="16" height="16" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.4" fill="#fff"/><circle cx="12" cy="12" r="2.4" fill="#fff"/><circle cx="19" cy="12" r="2.4" fill="#fff"/></svg>
+          </div>
+        </div>
+
+        <!-- search bar -->
+        <div style="display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: rgba(0,0,0,0.9);">
+          <div style="flex: 1; font: 400 15px/20px Roboto, sans-serif; color: #fff; padding: 8px 12px; border-radius: 10px; background: rgba(255,255,255,0.1);">desert</div>
+          <div style="min-width: 48px; text-align: right; font: 500 13px/18px Roboto, sans-serif; font-variant-numeric: tabular-nums; color: rgba(255,255,255,0.7);">3/17</div>
+          <div style="width: 32px; height: 32px; border-radius: 16px; display: flex; align-items: center; justify-content: center;">
+            <svg width="10" height="18" viewBox="0 0 14 26" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><path d="M10 5 L4 13 L10 21"/></svg>
+          </div>
+          <div style="width: 32px; height: 32px; border-radius: 16px; display: flex; align-items: center; justify-content: center;">
+            <svg width="10" height="18" viewBox="0 0 14 26" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><path d="M4 5 L10 13 L4 21"/></svg>
+          </div>
+          <div style="width: 32px; height: 32px; border-radius: 16px; display: flex; align-items: center; justify-content: center;">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><path d="M3 3 L13 13 M13 3 L3 13"/></svg>
+          </div>
+        </div>
+
+        <!-- PDF-only context strip -->
+        <div style="padding: 7px 16px 8px; background: rgba(0,0,0,0.78); border-top: 1px solid rgba(255,255,255,0.08);">
+          <div style="font: 400 12px/17px Roboto, sans-serif; color: rgba(255,255,255,0.62); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+            p.114 · …in the silence of the <span style="color: #14141a; background: #ffd43b; border-radius: 2px; padding: 0 2px; font-weight: 700;">desert</span>. He was more certain…
+          </div>
+        </div>
+
+        <div class="doc" style="height: 104px;">
+          …the pure Language of the World. It required no explanation, just as the universe
+          needs none as it travels through endless time, in the silence of the
+          <span style="background: #ffd43b; color: #14141a; border-radius: 2px;">desert</span>. He was more certain of it
+          than of anything in the <span style="background: #ff9f0a; color: #14141a; border-radius: 2px;">desert</span> world.
+        </div>
+      </div>
+
+      <div class="note">
+        Captions dropped: the group value goes from <span class="was">~54pt</span> to
+        <span class="good">~83pt</span>, about 8 characters to 13. <b style="color:#a0a2ad;">The tradeoff</b> — two
+        pills with no words naming them. The group field is dialled back (lower fill and border) so the file reads
+        as primary; say if you'd rather keep the captions.
+      </div>
+      <div class="note">
+        Both bars use one 32pt control box. Every match is opaque amber with dark ink, so it reads as a highlighter
+        on <span class="good">all five paper themes</span> including black. The strip under the search bar is the
+        PDF answer — pdfium already returns this context string and it is currently thrown away.
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"$preview":{"width":920,"height":660}}'>
+class Component extends DCLogic {}
+</script>
+</body>
+</html>

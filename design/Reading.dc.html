@@ -1,0 +1,175 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: Roboto, "Helvetica Neue", sans-serif; }
+    a { color: #4c8dff; } a:hover { color: #7fb0ff; }
+    .col { font: 600 13px/18px Roboto, sans-serif; letter-spacing: .3px; text-transform: uppercase; }
+    .cap { font: 500 12px/16px Roboto, sans-serif; color: #a0a2ad; margin: 0 0 8px; }
+    .note { font: 400 12px/17px Roboto, sans-serif; color: #6b6e78; margin-top: 10px; }
+    .was { color: #ff8a80; } .good { color: #6fd08c; }
+    .m { font: 500 11px/15px "Roboto Mono", monospace; }
+    td, th { font: 400 12px/16px Roboto, sans-serif; padding: 6px 9px; white-space: nowrap; }
+  </style>
+</helmet>
+
+<div style="width: 920px; height: 880px; background: #0b0c11; padding: 24px; box-sizing: border-box;">
+  <div style="font: 700 24px/30px Roboto, sans-serif; letter-spacing: -0.4px; color: #f3f3f6;">The reading surface</div>
+  <div style="font: 400 12px/17px Roboto, sans-serif; color: #6b6e78; margin: 3px 0 18px;">
+    Both columns: phone in <b style="color:#a0a2ad;">dark</b> mode, reader paper set to <b style="color:#a0a2ad;">Light</b> (top) and <b style="color:#a0a2ad;">Sepia</b> (bottom).
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 50px;">
+
+    <!-- TODAY -->
+    <div>
+      <div class="col was" style="margin-bottom: 10px;">Today</div>
+
+      <div class="cap">Spreadsheet — surfaces from the app palette, ink from the paper theme</div>
+      <div style="width: 411px; background: #0b0c11; border-radius: 8px; overflow: hidden; padding-bottom: 10px;">
+        <div style="display: flex; gap: 6px; padding: 8px 2px; background: #0b0c11; border-bottom: 1px solid #2b2f3b;">
+          <div style="padding: 6px 13px; border-radius: 7px; background: #4c8dff; color: #fff; font: 500 13px/16px Roboto, sans-serif;">Sheet1</div>
+          <div style="padding: 6px 13px; border-radius: 7px; border: 1px solid #2b2f3b; background: #1f222c; color: #a0a2ad; font: 500 13px/16px Roboto, sans-serif;">Notes</div>
+        </div>
+        <table style="border-collapse: collapse; width: 100%;">
+          <tr>
+            <th style="background: #1f222c; border: 1px solid #2b2f3b; width: 34px;"></th>
+            <th style="background: #1f222c; border: 1px solid #2b2f3b; color: #a0a2ad; font-weight: 600; text-align: center;">A</th>
+            <th style="background: #1f222c; border: 1px solid #2b2f3b; color: #a0a2ad; font-weight: 600; text-align: center;">B</th>
+          </tr>
+          <sc-for list="{{rows}}" as="r" hint-placeholder-count="5">
+            <tr>
+              <th style="background: #1f222c; border: 1px solid #2b2f3b; color: #a0a2ad; text-align: right; font-variant-numeric: tabular-nums;">{{r.n}}</th>
+              <td style="background: #15171e; border: 1px solid #2b2f3b; color: #14141a;">{{r.a}}</td>
+              <td style="background: #15171e; border: 1px solid #2b2f3b; color: #14141a;">{{r.b}}</td>
+            </tr>
+          </sc-for>
+        </table>
+      </div>
+      <div class="note">
+        Cell ink is <span class="m was">#14141a</span> on a cell of <span class="m was">#15171e</span>.
+        Row numbers survive because they use the app's own <span class="m">fgDim</span> — which is the tell.
+      </div>
+
+      <div class="cap" style="margin-top: 18px;">Markdown on sepia paper</div>
+      <div style="width: 411px; background: #f4ecd8; border-radius: 8px; padding: 16px 22px 20px; box-sizing: border-box; color: #4a3f2f; font: 400 17px/1.65 Georgia, serif;">
+        <div style="font: 650 24px/1.28 Georgia, serif; margin: 0 0 12px;">Language of the World</div>
+        <p style="margin: 0 0 1em;">It required no explanation, just as the universe needs none.</p>
+        <div style="background: #1f222c; border-radius: 9px; padding: 12px 14px; margin: 0 0 1em;">
+          <span style="font: 400 15px/1.5 'Roboto Mono', monospace; color: #4a3f2f;">const omen = read(sheep)</span>
+        </div>
+        <div style="border-left: 3px solid #2b2f3b; padding: .2em 0 .2em 1em; color: #a0a2ad;">
+          When you know that language, it is easy to understand.
+        </div>
+      </div>
+      <div class="note">
+        Code block is <span class="m was">surfaceAlt #1f222c</span> — a near-black slab on cream, with cream-theme ink
+        inside it. The quote rule is <span class="m was">border #2b2f3b</span> and its text
+        <span class="m was">fgDim #a0a2ad</span>, light grey on light paper.
+      </div>
+    </div>
+
+    <!-- PROPOSED -->
+    <div>
+      <div class="col good" style="margin-bottom: 10px;">Proposed</div>
+
+      <div class="cap">Every in-document surface derived from the paper</div>
+      <div style="width: 411px; background: #e3e3e5; border-radius: 8px; overflow: hidden; padding-bottom: 10px;">
+        <div style="display: flex; gap: 6px; padding: 8px 2px; background: #e3e3e5; border-bottom: 1px solid #cfcfd2;">
+          <div style="padding: 6px 13px; border-radius: 7px; background: #1749b8; color: #fff; font: 500 13px/16px Roboto, sans-serif;">Sheet1</div>
+          <div style="padding: 6px 13px; border-radius: 7px; border: 1px solid #cfcfd2; background: #f0f0f1; color: #6c6c73; font: 500 13px/16px Roboto, sans-serif;">Notes</div>
+        </div>
+        <table style="border-collapse: collapse; width: 100%;">
+          <tr>
+            <th style="background: #f0f0f1; border: 1px solid #dcdcde; width: 34px;"></th>
+            <th style="background: #f0f0f1; border: 1px solid #dcdcde; color: #6c6c73; font-weight: 600; text-align: center;">A</th>
+            <th style="background: #f0f0f1; border: 1px solid #dcdcde; color: #6c6c73; font-weight: 600; text-align: center;">B</th>
+          </tr>
+          <sc-for list="{{rows}}" as="r" hint-placeholder-count="5">
+            <tr>
+              <th style="background: #f0f0f1; border: 1px solid #dcdcde; color: #6c6c73; text-align: right; font-variant-numeric: tabular-nums;">{{r.n}}</th>
+              <td style="background: #ffffff; border: 1px solid #dcdcde; color: #14141a;">{{r.a}}</td>
+              <td style="background: #ffffff; border: 1px solid #dcdcde; color: #14141a;">{{r.b}}</td>
+            </tr>
+          </sc-for>
+        </table>
+      </div>
+      <div class="note">
+        Cell is <span class="m good">--sr-paper</span>, header <span class="m good">--sr-paper-alt</span>,
+        grid <span class="m good">--sr-rule</span>, row numbers <span class="m good">--sr-ink-dim</span>.
+        All computed from the paper the reader chose, so no combination can collide.
+      </div>
+
+      <div class="cap" style="margin-top: 18px;">Markdown on sepia paper</div>
+      <div style="width: 411px; background: #f4ecd8; border-radius: 8px; padding: 16px 22px 20px; box-sizing: border-box; color: #4a3f2f; font: 400 17px/1.65 Georgia, serif;">
+        <div style="font: 700 24px/1.28 Georgia, serif; margin: 0 0 12px;">Language of the World</div>
+        <p style="margin: 0 0 1em;">It required no explanation, just as the universe needs none.</p>
+        <div style="background: #ebe1c9; border-radius: 9px; padding: 12px 14px; margin: 0 0 1em;">
+          <span style="font: 400 15px/1.5 'Roboto Mono', monospace; color: #4a3f2f;">const omen = read(sheep)</span>
+        </div>
+        <div style="border-left: 3px solid #d8ccae; padding: .2em 1em .2em 1em; color: #7b7060;">
+          When you know that language, it is easy to understand.
+        </div>
+      </div>
+      <div class="note">
+        Code sits on a warm tint of the page, the rule is a tint of the ink, and the quote is inset on
+        <span class="good">both</span> sides — today it is only indented on the left, so it reads as a bar in the
+        margin rather than an inset block.
+      </div>
+    </div>
+  </div>
+
+  <!-- derivation strip -->
+  <div style="margin-top: 20px; background: #15171e; border: 1px solid #2b2f3b; border-radius: 14px; padding: 16px 20px;">
+    <div style="font: 600 15px/20px Roboto, sans-serif; color: #f3f3f6; margin-bottom: 4px;">What changes in the viewer</div>
+    <div style="font: 400 12px/17px Roboto, sans-serif; color: #6b6e78; margin-bottom: 12px;">
+      <span class="m" style="color:#a0a2ad;">applySettings</span> can set five properties today. It gains four, and the
+      document CSS stops interpolating the app palette.
+    </div>
+    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+      <sc-for list="{{vars}}" as="v" hint-placeholder-count="6">
+        <div style="display: flex; align-items: center; gap: 8px; background: #1f222c; border: 1px solid #2b2f3b; border-radius: 999px; padding: 5px 12px 5px 6px;">
+          <div style="width: 18px; height: 18px; border-radius: 9px; background: {{v.swatch}}; border: 1px solid rgba(255,255,255,0.16);"></div>
+          <div class="m" style="color: {{v.tone}};">{{v.name}}</div>
+          <div style="font: 400 11px/15px Roboto, sans-serif; color: #6b6e78;">{{v.from}}</div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"$preview":{"width":920,"height":880}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      rows: [
+        { n: '1', a: 'Title', b: 'Author' },
+        { n: '2', a: 'Attention Is All You Need', b: 'Vaswani' },
+        { n: '3', a: 'Deep Residual Learning', b: 'He' },
+        { n: '4', a: 'ImageNet Classification', b: 'Krizhevsky' },
+        { n: '5', a: 'Batch Normalization', b: 'Ioffe' },
+      ],
+      vars: [
+        { name: '--sr-paper',     swatch: '#ffffff', tone: '#a0a2ad', from: 'exists' },
+        { name: '--sr-ink',       swatch: '#14141a', tone: '#a0a2ad', from: 'exists' },
+        { name: '--sr-paper-alt', swatch: '#f0f0f1', tone: '#6fd08c', from: 'new — code, headers, cells' },
+        { name: '--sr-rule',      swatch: '#dcdcde', tone: '#6fd08c', from: 'new — borders, separators' },
+        { name: '--sr-ink-dim',   swatch: '#6c6c73', tone: '#6fd08c', from: 'new — quotes, row numbers' },
+        { name: '--sr-link',      swatch: '#1749b8', tone: '#6fd08c', from: 'new — anchors' },
+        { name: '--sr-hit',       swatch: '#ffd43b', tone: '#6fd08c', from: 'new — every match' },
+        { name: '--sr-hit-current', swatch: '#ff9f0a', tone: '#6fd08c', from: 'new — the one you are on' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,147 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: Roboto, "Helvetica Neue", sans-serif; }
+    a { color: #4c8dff; } a:hover { color: #7fb0ff; }
+    .col { font: 600 13px/18px Roboto, sans-serif; letter-spacing: .3px; text-transform: uppercase; }
+    .m { font: 500 11px/15px "Roboto Mono", monospace; }
+    .spec { font: 500 10px/14px "Roboto Mono", monospace; margin-top: 7px; }
+    .was { color: #ff8a80; } .good { color: #6fd08c; }
+    .sheet { width: 200px; background: #15171e; border: 1px solid #2b2f3b;
+             border-radius: 20px 20px 8px 8px; padding-top: 8px; overflow: hidden; }
+    .grab { width: 38px; height: 4px; border-radius: 2px; background: #2b2f3b; margin: 0 auto 10px; }
+  </style>
+</helmet>
+
+<div style="width: 920px; height: 640px; background: #0b0c11; padding: 24px; box-sizing: border-box;">
+  <div style="font: 700 24px/30px Roboto, sans-serif; letter-spacing: -0.4px; color: #f3f3f6;">Sheets — four rhythms, one</div>
+  <div style="font: 400 12px/17px Roboto, sans-serif; color: #6b6e78; margin: 3px 0 18px;">
+    The four surfaces that present a list of choices. Nothing about them agrees today.
+  </div>
+
+  <div class="col was" style="margin-bottom: 10px;">Today</div>
+  <div style="display: flex; gap: 16px; margin-bottom: 22px;">
+    <sc-for list="{{now}}" as="s" hint-placeholder-count="4">
+      <div>
+        <div class="sheet">
+          <div class="grab"></div>
+          <sc-if value="{{s.hasTitle}}" hint-placeholder-val="{{true}}">
+            <div style="display: flex; align-items: baseline; justify-content: space-between; padding: 0 {{s.padH}} {{s.headPadB}};">
+              <div style="font: {{s.titleFont}}; color: #f3f3f6;">{{s.title}}</div>
+              <div style="font: {{s.trailFont}}; color: {{s.trailColor}};">{{s.trail}}</div>
+            </div>
+          </sc-if>
+          <sc-for list="{{s.rows}}" as="r" hint-placeholder-count="3">
+            <div style="display: flex; align-items: center; gap: {{s.gap}}; padding: {{s.padV}} {{s.padH}}; padding-left: {{r.padL}};">
+              <sc-if value="{{r.glyph}}" hint-placeholder-val="{{false}}">
+                <div style="width: 20px; text-align: center; font: 600 15px/20px Roboto, sans-serif; color: #a0a2ad;">{{r.glyph}}</div>
+              </sc-if>
+              <div style="flex: 1; min-width: 0; font: {{s.rowFont}}; color: #f3f3f6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{r.label}}</div>
+              <sc-if value="{{r.meta}}" hint-placeholder-val="{{false}}">
+                <div style="font: 400 13px/18px Roboto, sans-serif; color: #a0a2ad; font-variant-numeric: tabular-nums;">{{r.meta}}</div>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+        <div style="font: 500 12px/16px Roboto, sans-serif; color: #a0a2ad; margin-top: 10px;">{{s.name}}</div>
+        <div class="spec was">{{s.spec}}</div>
+      </div>
+    </sc-for>
+  </div>
+
+  <div class="col good" style="margin-bottom: 10px;">Proposed — one rhythm</div>
+  <div style="display: flex; gap: 16px;">
+    <sc-for list="{{next}}" as="s" hint-placeholder-count="4">
+      <div>
+        <div class="sheet">
+          <div class="grab"></div>
+          <sc-if value="{{s.hasTitle}}" hint-placeholder-val="{{true}}">
+            <div style="display: flex; align-items: baseline; justify-content: space-between; padding: 0 20px 12px;">
+              <div style="font: 600 17px/22px Roboto, sans-serif; letter-spacing: -0.2px; color: #f3f3f6;">{{s.title}}</div>
+              <div style="font: 500 13px/18px Roboto, sans-serif; color: {{s.trailColor}};">{{s.trail}}</div>
+            </div>
+          </sc-if>
+          <sc-for list="{{s.rows}}" as="r" hint-placeholder-count="3">
+            <div style="display: flex; align-items: center; gap: 12px; padding: 14px 20px; padding-left: {{r.padL}};">
+              <sc-if value="{{r.glyph}}" hint-placeholder-val="{{false}}">
+                <div style="width: 20px; text-align: center; font: 600 15px/20px Roboto, sans-serif; color: #a0a2ad;">{{r.glyph}}</div>
+              </sc-if>
+              <div style="flex: 1; min-width: 0; font: 400 15px/20px Roboto, sans-serif; color: #f3f3f6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{r.label}}</div>
+              <sc-if value="{{r.meta}}" hint-placeholder-val="{{false}}">
+                <div style="font: 500 13px/18px Roboto, sans-serif; color: #a0a2ad; font-variant-numeric: tabular-nums;">{{r.meta}}</div>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+        <div style="font: 500 12px/16px Roboto, sans-serif; color: #a0a2ad; margin-top: 10px;">{{s.name}}</div>
+        <div class="spec good">title 17/600 · row 15/400 · pad 14/20 · 48pt row</div>
+      </div>
+    </sc-for>
+
+    <div style="flex: 1; min-width: 0; padding-left: 8px;">
+      <div style="font: 600 15px/20px Roboto, sans-serif; color: #f3f3f6;">Why this one</div>
+      <div style="font: 400 12px/18px Roboto, sans-serif; color: #6b6e78; margin-top: 8px;">
+        A 48pt row clears the 44pt target with the padding doing the work, so no row needs a hitSlop.
+        Body at 15 is what three of the four already use — only <span class="was">ActionSheet's 16</span> is the odd one,
+        and it is the sheet with the longest labels, where 15 buys back a few characters.
+      </div>
+      <div style="font: 400 12px/18px Roboto, sans-serif; color: #6b6e78; margin-top: 10px;">
+        Titles move from <span class="was">16/600</span> to <span class="good">17/600</span> so a sheet heading and a
+        group heading on the board are the same thing — they are the same thing.
+      </div>
+      <div style="font: 400 12px/18px Roboto, sans-serif; color: #6b6e78; margin-top: 10px;">
+        The popover keeps its narrower 16pt gutter only because it is anchored, not full-width — everything else
+        it shares.
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"$preview":{"width":920,"height":640}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const row = (label, extra) => Object.assign({ label, glyph: false, meta: false, padL: '' }, extra || {});
+    return {
+      now: [
+        { name: 'ActionSheet', spec: 'title 16/600 · row 16/400 · pad 15/20 · 49pt row',
+          hasTitle: true, title: 'Jump to file', trail: '', trailFont: '400 13px/18px Roboto, sans-serif', trailColor: '#6b6e78',
+          padH: '20px', headPadB: '10px', padV: '15px', gap: '12px', rowFont: '400 16px/21px Roboto, sans-serif',
+          rows: [row('Orbital Silence', { meta: '1.2 MB' }), row('Dune notes', { meta: '840 KB' }), row('Comics vol 1', { meta: '31 MB' })] },
+        { name: 'TocSheet', spec: 'title 16/600 · row 15/400 · pad 13/20 · 46pt row',
+          hasTitle: true, title: 'Chapters', trail: '24', trailFont: '400 13px/18px Roboto, sans-serif', trailColor: '#6b6e78',
+          padH: '20px', headPadB: '8px', padV: '13px', gap: '12px', rowFont: '400 15px/20px Roboto, sans-serif',
+          rows: [row('Part One'), row('The omen', { padL: '38px' }), row('The well', { padL: '38px' })] },
+        { name: 'PopoverMenu', spec: 'no title · row 15/400 · pad 13/16 · 46pt row',
+          hasTitle: false, title: '', trail: '', trailFont: '', trailColor: '#6b6e78',
+          padH: '16px', headPadB: '0', padV: '13px', gap: '14px', rowFont: '400 15px/20px Roboto, sans-serif',
+          rows: [row('Find in document', { glyph: '⌕' }), row('Chapters', { glyph: '☰' }), row('Display', { glyph: 'Aa' })] },
+        { name: 'ReaderSettings', spec: 'title 16/600 · row 15/400 · pad 11/20 · 42pt row',
+          hasTitle: true, title: 'Display', trail: 'Reset', trailFont: '600 14px/19px Roboto, sans-serif', trailColor: '#4c8dff',
+          padH: '20px', headPadB: '8px', padV: '11px', gap: '12px', rowFont: '400 15px/20px Roboto, sans-serif',
+          rows: [row('Text size', { meta: '17' }), row('Line spacing', { meta: '1.7' }), row('Margins', { meta: '22' })] },
+      ],
+      next: [
+        { name: 'ActionSheet', hasTitle: true, title: 'Jump to file', trail: '', trailColor: '#6b6e78',
+          rows: [row('Orbital Silence', { meta: '1.2 MB' }), row('Dune notes', { meta: '840 KB' }), row('Comics vol 1', { meta: '31 MB' })] },
+        { name: 'TocSheet', hasTitle: true, title: 'Chapters', trail: '24', trailColor: '#6b6e78',
+          rows: [row('Part One'), row('The omen', { padL: '40px' }), row('The well', { padL: '40px' })] },
+        { name: 'PopoverMenu', hasTitle: false, title: '', trail: '', trailColor: '#6b6e78',
+          rows: [row('Find in document', { glyph: '⌕' }), row('Chapters', { glyph: '☰' }), row('Display', { glyph: 'Aa' })] },
+        { name: 'ReaderSettings', hasTitle: true, title: 'Display', trail: 'Reset', trailColor: '#4c8dff',
+          rows: [row('Text size', { meta: '17' }), row('Line spacing', { meta: '1.7' }), row('Margins', { meta: '22' })] },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

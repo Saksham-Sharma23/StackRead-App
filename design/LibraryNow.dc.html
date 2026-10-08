@@ -1,0 +1,153 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;600;700&display=swap">
+  <style>
+    body { margin: 0; font-family: Roboto, "Helvetica Neue", sans-serif; }
+    a { color: #4c8dff; } a:hover { color: #7fb0ff; }
+    .tag { position: absolute; font: 500 10px/1 Roboto, sans-serif; letter-spacing: .4px;
+           color: #ff5a4e; background: rgba(255,90,78,.13); border: 1px solid rgba(255,90,78,.4);
+           padding: 3px 6px; border-radius: 4px; white-space: nowrap; }
+  </style>
+</helmet>
+
+<div style="position: relative; width: 411px; height: 914px; background: #0b0c11; overflow: hidden;">
+
+  <!-- status-bar safe area: left empty on purpose, the OS paints here -->
+  <div style="height: 36px;"></div>
+
+  <!-- header -->
+  <div style="padding: 0 16px; margin-bottom: 22px;">
+    <div style="display: flex; align-items: center; justify-content: space-between;">
+      <div style="font: 700 30px/36px Roboto, sans-serif; letter-spacing: -0.6px; color: #f3f3f6;">StackRead</div>
+      <svg width="24" height="24" viewBox="0 0 24 24" style="display: block;">
+        <circle cx="5" cy="12" r="2.1" fill="#a0a2ad"/><circle cx="12" cy="12" r="2.1" fill="#a0a2ad"/><circle cx="19" cy="12" r="2.1" fill="#a0a2ad"/>
+      </svg>
+    </div>
+    <div style="font: 400 13px/18px Roboto, sans-serif; color: #6b6e78; margin-top: 3px;">26 files · 13 groups</div>
+
+    <!-- library search -->
+    <div style="display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 0 12px;
+                border: 1px solid #2b2f3b; border-radius: 10px; background: #1f222c;">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#6b6e78" stroke-width="1.5">
+        <circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 L14 14" stroke-linecap="round"/>
+      </svg>
+      <div style="flex: 1; font: 400 15px/18px Roboto, sans-serif; color: #6b6e78; padding: 9px 0;">Search your library</div>
+    </div>
+  </div>
+
+  <sc-for list="{{groups}}" as="g" hint-placeholder-count="3">
+    <div style="margin-bottom: 22px;">
+      <div style="display: flex; align-items: center; gap: 8px; padding: 0 16px; margin-bottom: 10px;">
+        <div style="font: 600 17px/22px Roboto, sans-serif; letter-spacing: -0.2px; color: #f3f3f6;">{{g.title}}</div>
+        <div style="font: 400 13px/18px Roboto, sans-serif; color: #6b6e78;">{{g.count}}</div>
+        <div style="margin-left: auto; padding: 0 4px;">
+          <svg width="18" height="18" viewBox="0 0 24 24" style="display: block;">
+            <circle cx="5" cy="12" r="2.4" fill="#a0a2ad"/><circle cx="12" cy="12" r="2.4" fill="#a0a2ad"/><circle cx="19" cy="12" r="2.4" fill="#a0a2ad"/>
+          </svg>
+        </div>
+      </div>
+
+      <div style="display: flex; align-items: flex-start; padding: 0 16px;">
+        <sc-for list="{{g.cards}}" as="c" hint-placeholder-count="3">
+          <div style="width: 132px; margin-right: 12px;">
+            <div style="position: relative; width: 132px; height: 176px; border-radius: 14px;
+                        border: 0.5px solid #2b2f3b; background: #15171e; padding: 8px; overflow: hidden;">
+              <div style="height: {{c.previewH}}; border-radius: 9px; overflow: hidden; background: {{c.cover}};
+                          display: flex; align-items: center; justify-content: center;">
+                <div style="font: {{c.coverFont}}; color: {{c.coverInk}}; text-align: center; padding: 0 8px;">{{c.coverText}}</div>
+              </div>
+              <sc-if value="{{c.read}}" hint-placeholder-val="{{true}}">
+                <div style="height: 3px; border-radius: 2px; margin-top: 7px; background: #1f222c; overflow: hidden;">
+                  <div style="height: 3px; border-radius: 2px; background: #4c8dff; width: {{c.progress}};"></div>
+                </div>
+              </sc-if>
+              <div style="font: 400 12px/15px Roboto, sans-serif; color: #f3f3f6; margin-top: 5px;">{{c.name}}</div>
+              <div style="position: absolute; top: 6px; right: 6px; width: 26px; height: 26px; border-radius: 13px;
+                          background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center;">
+                <svg width="15" height="15" viewBox="0 0 24 24" style="display: block;">
+                  <circle cx="5" cy="12" r="2.6" fill="#ffffff"/><circle cx="12" cy="12" r="2.6" fill="#ffffff"/><circle cx="19" cy="12" r="2.6" fill="#ffffff"/>
+                </svg>
+              </div>
+            </div>
+          </div>
+        </sc-for>
+
+        <sc-if value="{{g.addTile}}" hint-placeholder-val="{{false}}">
+          <div style="width: 132px; height: 176px; border-radius: 14px; border: 1.5px dashed #2b2f3b;
+                      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;">
+            <div style="font: 300 28px/32px Roboto, sans-serif; color: #6b6e78;">+</div>
+            <div style="font: 400 12px/16px Roboto, sans-serif; color: #6b6e78;">Add files</div>
+          </div>
+        </sc-if>
+      </div>
+    </div>
+  </sc-for>
+
+  <!-- nav-bar glass strip (shipped in v0.1.1) -->
+  <div style="position: absolute; left: 0; right: 0; bottom: 0; height: 48px;">
+    <div style="height: 1px; background: rgba(255,255,255,0.06);"></div>
+    <div style="height: 11px; background: rgba(11,12,17,0.20);"></div>
+    <div style="height: 12px; background: rgba(11,12,17,0.50);"></div>
+    <div style="height: 12px; background: rgba(11,12,17,0.78);"></div>
+    <div style="height: 12px; background: rgba(11,12,17,0.94);"></div>
+  </div>
+
+  <!-- defect callouts -->
+  <div class="tag" style="top: 118px; left: 208px;">30 / 700 vs group 17 / 600 vs card 12 — 16 sizes, no scale</div>
+  <div class="tag" style="top: 258px; left: 16px;">⋯ at 24 / 18 / 15pt, three containers, two with no press feedback</div>
+  <div class="tag" style="top: 372px; left: 152px;">⋯ vanishes on a light cover</div>
+  <div class="tag" style="top: 470px; left: 16px;">preview height jumps 10px when a file is unread</div>
+  <div class="tag" style="top: 556px; left: 190px;">strip is 16 left / 28 right</div>
+  <div class="tag" style="top: 702px; left: 16px;">card border 0.5 next to tile border 1.5</div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"$preview":{"width":411,"height":914}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const cover = (bg, text, ink, font) => ({ cover: bg, coverText: text, coverInk: ink, coverFont: font });
+    return {
+      groups: [
+        {
+          title: 'New group', count: '7', addTile: false,
+          cards: [
+            Object.assign({ name: 'andrew-ng-machine-le…', read: true, progress: '72%', previewH: '115px' },
+              cover('linear-gradient(160deg,#9fc4d8,#5d7f96)', 'MACHINE\nLEARNING\nYEARNING', '#0e2230', '700 10px/12px Roboto, sans-serif')),
+            Object.assign({ name: 'Bhagavad-gita-Swami…', read: true, progress: '8%', previewH: '115px' },
+              cover('#f7f4ec', 'BHAGAVAD\nGITA', '#2a241a', '500 11px/14px Georgia, serif')),
+            Object.assign({ name: 'CS26S48011267_Admit…', read: false, progress: '0%', previewH: '125px' },
+              cover('#e8e4ef', 'ADMIT\nCARD', '#4a4356', '600 10px/13px Roboto, sans-serif')),
+          ],
+        },
+        {
+          title: 'New group', count: '1', addTile: true,
+          cards: [
+            Object.assign({ name: 'Quantum Mechanics L…', read: false, progress: '0%', previewH: '125px' },
+              cover('#1f222c', 'TXT', '#f3f3f6', '700 12px/16px Roboto, sans-serif')),
+          ],
+        },
+        {
+          title: 'New group', count: '5', addTile: false,
+          cards: [
+            Object.assign({ name: '0_0 (1).jpeg', read: false, progress: '0%', previewH: '125px' },
+              cover('linear-gradient(180deg,#8f9e78,#4a5a3e)', '', '#fff', '400 10px/12px Roboto, sans-serif')),
+            Object.assign({ name: '0_0.jpeg', read: false, progress: '0%', previewH: '125px' },
+              cover('linear-gradient(180deg,#3b4356,#1c2130)', '', '#fff', '400 10px/12px Roboto, sans-serif')),
+            Object.assign({ name: '0_1 (1).jpeg', read: false, progress: '0%', previewH: '125px' },
+              cover('linear-gradient(180deg,#7fa4c4,#c98fa8)', '', '#fff', '400 10px/12px Roboto, sans-serif')),
+          ],
+        },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

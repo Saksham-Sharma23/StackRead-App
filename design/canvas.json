@@ -1,0 +1,34 @@
+{
+  "artboards": [
+    { "file": "LibraryNow.dc.html", "title": "Library — today", "x": 0, "y": 0, "w": 411, "h": 914 },
+    { "file": "Main.dc.html", "title": "Library — proposed", "x": 520, "y": 0, "w": 411, "h": 914 },
+    { "file": "System.dc.html", "title": "Design tokens", "x": 1040, "y": 0, "w": 1000, "h": 900 },
+    { "file": "Reader.dc.html", "title": "Reader chrome", "x": 0, "y": 1060, "w": 920, "h": 660 },
+    { "file": "Reading.dc.html", "title": "Reading surface", "x": 1010, "y": 1060, "w": 920, "h": 880 },
+    { "file": "Sheets.dc.html", "title": "Sheets", "x": 0, "y": 2070, "w": 920, "h": 640 }
+  ],
+  "annotations": [
+    {
+      "id": "how-to-read",
+      "x": 0,
+      "y": -170,
+      "w": 520,
+      "text": "Left is the app as it is today, rebuilt from theme.ts, motion.ts and the component stylesheets — not from the screenshots. Right is the proposal.\n\nRed callouts are defects with a measured number behind them. Green callouts are what replaces them."
+    },
+    {
+      "id": "open-questions",
+      "x": 1040,
+      "y": -170,
+      "w": 500,
+      "text": "Two things I did NOT change, both worth a decision:\n\n1. Icons stay text glyphs, per your call. Note the search icon is U+2315 TELEPHONE RECORDER and the chevron is U+2304 — neither is in Roboto, so both fall back to a symbol font. That is what the -5px nudge on the chevron is for.\n\n2. Filenames still render raw (slug + extension). Say the word and cards read 'Machine Learning Yearning' instead."
+    },
+    {
+      "id": "sheets-note",
+      "x": 1010,
+      "y": 2070,
+      "w": 420,
+      "text": "The four sheets are the clearest single argument for tokens: same job, four row heights, three body sizes, two gutters — none of it decided, all of it drifted."
+    }
+  ],
+  "launch": { "view": "canvas" }
+}
