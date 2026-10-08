@@ -3,6 +3,7 @@ import { usePageNav } from '../store/pageNav'
 import { useSearch } from '../store/search'
 import { forgetPrepared, clearPrepared } from '../renderers/webview/prepareCache'
 import { forgetPreparedOnDisk, clearPreparedOnDisk } from '../renderers/webview/diskCache'
+import { releaseAllArchives } from '../renderers/webview/offload'
 import { forgetPrefetchFailure, resetPrefetchFailures } from '../renderers/webview/prefetch'
 import { forgetSize, clearSizeCache } from './files'
 import { resetThumbnailAttempt, resetAllThumbnailAttempts } from './thumbs'
@@ -134,6 +135,10 @@ export function forgetFileEverywhere(fileId: string): void {
  */
 export function resetAllCaches(): void {
   clearPrepared()
+  // Archives parked on the worker runtimes are keyed per parse rather than per
+  // file id, so nothing would read a stale one — but a restore replaces every
+  // file, and holding the old library's books in native memory serves no one.
+  releaseAllArchives()
   clearPreparedOnDisk()
   clearSizeCache()
   resetAllThumbnailAttempts()

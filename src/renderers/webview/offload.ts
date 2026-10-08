@@ -2,7 +2,16 @@ import { createWorkletRuntime, runOnRuntimeAsync } from 'react-native-worklets'
 import { unzipSync } from 'fflate'
 
 import { toBase64 } from './bytes'
+import {
+  parkArchive,
+  readParked,
+  releaseParked,
+  zipRead,
+  type ZipEntryInfo,
+} from './zipWorklet'
 import { PERF, now, type PrepareTrace } from '../../ui/perf'
+
+export type { ZipEntryInfo } from './zipWorklet'
 
 /**
  * Runs the expensive, purely-computational parts of document preparation on a
@@ -33,6 +42,12 @@ import { PERF, now, type PrepareTrace } from '../../ui/perf'
  * Unzip and base64 are pure functions over byte arrays with no React, no
  * native modules and no shared mutable state, which is precisely the shape a
  * worklet runtime can take.
+ *
+ * **The unzip itself must be a worklet.** A worklet can only call functions
+ * that are worklets too; fflate's `unzipSync` is not, so calling it on the
+ * worker threw and every unzip quietly fell back to the JS thread after paying
+ * for the copy. The worker side now runs `zipRead` from `zipWorklet.ts`, and
+ * fflate is used only in the JS-thread fallbacks below.
  *
  * ## What stays on the JS thread
  *
@@ -153,7 +168,7 @@ export async function unzipOffThread(
       const measured = await runOnRuntimeAsync(getRuntime(lane), (data: Uint8Array) => {
         'worklet'
         const t0 = Date.now()
-        const files = unzipSync(data)
+        const files = zipRead(data, null, false).files
         // Reported from *inside* the runtime, so the caller can subtract it
         // from wall time and be left with the crossing cost alone. That
         // difference is the only direct evidence for AUDIT2 §1.2, which is
@@ -168,10 +183,10 @@ export async function unzipOffThread(
 
     return await runOnRuntimeAsync(getRuntime(lane), (data: Uint8Array) => {
       'worklet'
-      // `unzipSync` is imported into the worklet's closure. fflate is pure JS
-      // with no platform dependencies, which is what makes this legal — a
-      // library touching a native module could not be captured this way.
-      return unzipSync(data)
+      // `zipRead`, not fflate's `unzipSync`: only a worklet can be called from
+      // a worklet. An archive `zipRead` does not support throws, and the catch
+      // below hands it to fflate on the JS thread.
+      return zipRead(data, null, false).files
     }, bytes)
   } catch {
     /*
@@ -195,128 +210,237 @@ export async function unzipOffThread(
 }
 
 /**
- * One entry's metadata, straight from the ZIP central directory.
+ * How many archives each runtime keeps resident.
  *
- * `originalSize` is the uncompressed byte count, and the archive records it
- * without anything having to be decompressed — which is what makes a two-phase
- * open possible at all.
+ * Two, not one: the book being read and one more — a neighbour being prefetched
+ * on the same lane, or the previous book while the next one opens. Each is a
+ * whole archive held in native memory on the worker, so this is deliberately
+ * small. Losing an archive to eviction costs one disk read and one copy, the
+ * same as the pass that parked it.
  */
-export interface ZipEntryInfo {
-  name: string
-  originalSize: number
-}
+const MAX_RESIDENT = 2
 
 /**
- * Lists an archive's entries **without decompressing any of them**.
+ * An archive opened for several targeted reads.
  *
- * fflate's filter is called once per entry with its central-directory record;
- * returning false everywhere means the walk reads the directory and stops. So
- * this is a few hundred microseconds regardless of how large the archive is.
+ * The EPUB path reads one archive in up to six passes. Before this, each pass
+ * was handed the whole file, and each hand-off copied it across the worklet
+ * boundary ([AUDIT4 A2](../../../AUDIT4.md)). A handle crosses with the bytes
+ * once; every later `unzip` sends only names.
+ *
+ * **It never holds the bytes on the JS side** once they are parked. Callers
+ * that keep a handle in a cached document — `loadRest` and `loadImages` do —
+ * therefore keep a key and a way to reload, not the whole book.
  */
-export async function listEntriesOffThread(
-  bytes: Uint8Array,
-  lane: OffloadLane = 'user',
-): Promise<ZipEntryInfo[]> {
-  const collect = (data: Uint8Array): ZipEntryInfo[] => {
-    const out: ZipEntryInfo[] = []
-    unzipSync(data, {
-      filter: (f) => {
-        out.push({ name: f.name, originalSize: f.originalSize })
-        return false
-      },
-    })
-    return out
-  }
-
-  if (!canOffload()) return collect(bytes)
-
-  try {
-    return await runOnRuntimeAsync(getRuntime(lane), (data: Uint8Array) => {
-      'worklet'
-      const out: { name: string; originalSize: number }[] = []
-      unzipSync(data, {
-        filter: (f) => {
-          out.push({ name: f.name, originalSize: f.originalSize })
-          return false
-        },
-      })
-      return out
-    }, bytes)
-  } catch {
-    return collect(bytes)
-  }
+export interface ArchiveHandle {
+  /** Every entry, from the central directory. Nothing is decompressed for it. */
+  readonly entries: ZipEntryInfo[]
+  /** Decompresses the named entries. Names not in the archive are absent from the result. */
+  unzip(names: string[], trace?: PrepareTrace): Promise<Record<string, Uint8Array>>
+  /** Lets the worker drop the archive. Later `unzip` calls still work, by reloading. */
+  release(): void
 }
 
+/** Distinguishes every parked archive, so a reopened file never reads a stale one. */
+let parkSeq = 0
+
+/** Keys parked per lane, so `releaseAllArchives` only visits runtimes that exist. */
+const parkedLanes = new Set<OffloadLane>()
+
 /**
- * Unzips only the entries a caller names.
+ * Opens an archive for repeated targeted reads.
  *
- * The point of the `wanted` set is that everything outside it is never
- * decompressed *and* never crosses the runtime boundary — which is where the
- * cost actually is (see the copy semantics in
- * [AUDIT2 §1.2](../../AUDIT2.md)). Opening a 600-page book on its first three
- * chapters therefore moves kilobytes rather than tens of megabytes.
+ * `load` reads the file. It is called once here, and again only if the worker
+ * evicted the archive or the worker path failed — so it must be safe to call
+ * more than once, which reading from disk is.
  *
- * A plain array rather than a Set for the argument, because a Set does not
- * survive the worklet boundary — it serialises as an empty object, which would
- * silently match nothing and return an empty archive.
+ * Where no worklet runtime is available, or the archive is one `zipRead` does
+ * not support, the handle keeps the bytes on the JS side and unzips them with
+ * fflate. That is the previous behaviour exactly; only the thread differs.
  */
-export async function unzipSomeOffThread(
-  bytes: Uint8Array,
-  wanted: string[],
+export async function openArchive(
+  load: () => Promise<Uint8Array>,
   lane: OffloadLane = 'user',
   trace?: PrepareTrace,
-): Promise<Record<string, Uint8Array>> {
-  if (!wanted.length) return {}
+): Promise<ArchiveHandle> {
+  const bytes = await load()
 
-  const run = (data: Uint8Array, names: string[]): Record<string, Uint8Array> => {
-    const set = new Set(names)
-    return unzipSync(data, { filter: (f) => set.has(f.name) })
+  if (canOffload()) {
+    const key = `archive-${++parkSeq}`
+    try {
+      const wall = now()
+      const entries = await runOnRuntimeAsync(
+        getRuntime(lane),
+        (data: Uint8Array, k: string, max: number) => {
+          'worklet'
+          return parkArchive(k, data, max)
+        },
+        bytes,
+        key,
+        MAX_RESIDENT,
+      )
+      // Parking is the one crossing that carries the whole archive, so it is
+      // what the `cross` segment measures for this path.
+      trace?.cross(now() - wall)
+      parkedLanes.add(lane)
+      return residentArchive(key, entries, load, lane)
+    } catch {
+      // Not parkable — ZIP64, an unusual method, a runtime failure. The bytes
+      // are already in hand, so fall through rather than reading them twice.
+    }
   }
 
-  if (!canOffload()) {
-    const t0 = now()
-    const files = run(bytes, wanted)
-    trace?.unzip(now() - t0)
-    return files
-  }
+  return jsArchive(bytes, load, trace)
+}
 
-  try {
+/** Drops every parked archive on every runtime. For backgrounding and restores. */
+export function releaseAllArchives(): void {
+  for (const lane of parkedLanes) {
+    const runtime = runtimes[lane]
+    if (!runtime) continue
+    runOnRuntimeAsync(runtime, () => {
+      'worklet'
+      releaseParked(null)
+    }).catch(() => {
+      // Nothing to recover: an archive that was not dropped is dropped by the
+      // next eviction instead.
+    })
+  }
+}
+
+/** A handle whose archive lives on a worker runtime. */
+function residentArchive(
+  key: string,
+  entries: ZipEntryInfo[],
+  load: () => Promise<Uint8Array>,
+  lane: OffloadLane,
+): ArchiveHandle {
+  /** Reads named entries from the parked archive; null when it was evicted. */
+  const readResident = async (
+    names: string[],
+    trace?: PrepareTrace,
+  ): Promise<Record<string, Uint8Array> | null> => {
     if (PERF) {
       const wall = now()
       const measured = await runOnRuntimeAsync(
         getRuntime(lane),
-        (data: Uint8Array, names: string[]) => {
+        (k: string, n: string[]) => {
           'worklet'
           const t0 = Date.now()
-          const set = new Set(names)
-          const files = unzipSync(data, { filter: (f) => set.has(f.name) })
+          const files = readParked(k, n)
           return { files, unzipMs: Date.now() - t0 }
         },
-        bytes,
-        wanted,
+        key,
+        names,
       )
-      const elapsed = now() - wall
       trace?.unzip(measured.unzipMs)
-      trace?.cross(Math.max(0, elapsed - measured.unzipMs))
+      trace?.cross(Math.max(0, now() - wall - measured.unzipMs))
       return measured.files
     }
 
     return await runOnRuntimeAsync(
       getRuntime(lane),
-      (data: Uint8Array, names: string[]) => {
+      (k: string, n: string[]) => {
         'worklet'
-        const set = new Set(names)
-        return unzipSync(data, { filter: (f) => set.has(f.name) })
+        return readParked(k, n)
       },
-      bytes,
-      wanted,
+      key,
+      names,
     )
-  } catch {
-    const t0 = now()
-    const files = run(bytes, wanted)
-    trace?.unzip(now() - t0)
-    return files
   }
+
+  return {
+    entries,
+
+    async unzip(names, trace) {
+      if (!names.length) return {}
+
+      try {
+        const files = await readResident(names, trace)
+        if (files) return files
+
+        /*
+         * Evicted: another archive took the slot, or the app was backgrounded
+         * and `releaseAllArchives` ran. Park it again under the same key and
+         * read once more. Rare, and costs what the original park cost.
+         */
+        await runOnRuntimeAsync(
+          getRuntime(lane),
+          (data: Uint8Array, k: string, max: number) => {
+            'worklet'
+            parkArchive(k, data, max)
+          },
+          await load(),
+          key,
+          MAX_RESIDENT,
+        )
+        const again = await readResident(names, trace)
+        if (again) return again
+      } catch {
+        // Fall through to the JS thread.
+      }
+
+      return unzipNamed(await load(), names, trace)
+    },
+
+    release() {
+      runOnRuntimeAsync(
+        getRuntime(lane),
+        (k: string) => {
+          'worklet'
+          releaseParked(k)
+        },
+        key,
+      ).catch(() => {
+        // An archive that could not be released is evicted by the next park.
+      })
+    },
+  }
+}
+
+/** A handle that keeps the bytes on the JS thread and unzips with fflate. */
+function jsArchive(
+  initial: Uint8Array,
+  load: () => Promise<Uint8Array>,
+  trace?: PrepareTrace,
+): ArchiveHandle {
+  let bytes: Uint8Array | null = initial
+
+  const entries: ZipEntryInfo[] = []
+  const t0 = now()
+  unzipSync(initial, {
+    filter: (f) => {
+      entries.push({ name: f.name, originalSize: f.originalSize })
+      return false
+    },
+  })
+  trace?.unzip(now() - t0)
+
+  return {
+    entries,
+    async unzip(names, readTrace) {
+      if (!names.length) return {}
+      if (!bytes) bytes = await load()
+      return unzipNamed(bytes, names, readTrace)
+    },
+    release() {
+      // Dropping the reference is the whole release. A later read reloads.
+      bytes = null
+    },
+  }
+}
+
+/** fflate on the JS thread, filtered to the named entries. */
+function unzipNamed(
+  bytes: Uint8Array,
+  names: string[],
+  trace?: PrepareTrace,
+): Record<string, Uint8Array> {
+  const t0 = now()
+  const set = new Set(names)
+  const files = unzipSync(bytes, { filter: (f) => set.has(f.name) })
+  trace?.unzip(now() - t0)
+  return files
 }
 
 /**

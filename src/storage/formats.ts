@@ -100,10 +100,13 @@ const FALLBACK: FormatSpec = {
  * backstop against being killed by the OOM reaper — not a policy about what is
  * reasonable to read. Anything that fits should open.
  *
- * EPUB is deliberately absent: `loadEpubAsHtml` streams chapter by chapter and
- * budgets its own images, so it is the one heavy format with a real bound
- * already. Formats rendered by native views from disk (PDF, image) never load
- * their bytes into JS at all.
+ * EPUB used to be absent here, on the grounds that `loadEpubAsHtml` streams
+ * chapter by chapter and budgets its own images. That bounded what reaches the
+ * *viewer*, not what reaches memory: the whole archive is still read into JS
+ * before a single chapter is chosen, and a 300MB textbook went straight onto
+ * the heap ([AUDIT4 A1](../../AUDIT4.md)). It has a ceiling now like every other
+ * format that loads its bytes. Formats rendered by native views from disk (PDF,
+ * image) never load their bytes into JS at all.
  */
 export const MAX_PREPARE_BYTES: Partial<Record<FileFormat, number>> = {
   text: 6_000_000,
@@ -128,6 +131,20 @@ export const MAX_PREPARE_BYTES: Partial<Record<FileFormat, number>> = {
    */
   comic: 40_000_000,
   archive: 40_000_000,
+  /*
+   * 100MB, above comics because an EPUB is no longer unzipped whole.
+   *
+   * The archive is read once and parked on the worker; only first-paint
+   * chapters, then the rest of the text, then budgeted images
+   * (`MAX_TOTAL_INLINE_BYTES` in `epub.ts`) are ever decompressed. So the
+   * transient cost is roughly two copies of the file plus what is extracted,
+   * not the multiple of the file that a comic's full unzip costs. Most
+   * illustrated novels are well under 50MB; textbooks are what this stops.
+   *
+   * **Measured on no device yet.** Raise it after a release-build test of a
+   * large book shows headroom, not before.
+   */
+  epub: 100_000_000,
 }
 
 export function extensionOf(filename: string): string {

@@ -25,6 +25,18 @@ and a concrete failure scenario.
 - Items marked **(verify)** depend on runtime behaviour that cannot be confirmed
   from source alone.
 
+### Status
+
+| Finding | State | Notes |
+|---|---|---|
+| **A1** | **Fixed** | `MAX_PREPARE_BYTES.epub = 100 MB`, enforced by `prepareFile` and by `extractCover` |
+| **A2** | **Fixed** | Archive parked on the worker once; every later pass sends names only. See "A2 — what was done" below |
+| B2 | Fixed as a side effect | `loadRest`/`loadImages` are memoised, which A2's release accounting needs |
+
+`npm run check`: typecheck clean, **396 tests pass** (377 + 12 in
+`zipWorklet.test.ts` + 7 in `archiveOffload.test.ts`). Not yet verified on a
+device.
+
 ---
 
 ## 1. The architecture in one page
@@ -210,6 +222,44 @@ cache (CLAUDE.md §7). A cheaper partial fix is to merge the three open-time
 calls into one worklet call that lists the archive, reads `container.xml`, then
 finds and decompresses the OPF. Container/OPF discovery can use a regex inside
 the worklet, as `covers.ts` already does.
+
+**A2 — what was done, and a worse problem found on the way.** While fixing
+this it turned out the offload **never ran off the JS thread for unzips**.
+babel-preset-expo adds the worklets plugin without bundle mode, so a worklet
+can only call other worklets. fflate's `unzipSync` is a plain import: it is
+serialised as a remote function, and calling it on the worker throws "Tried to
+synchronously call a Remote Function". Every "off-thread" unzip therefore
+copied the archive across, threw, and redid the unzip on the JS thread in the
+`catch`. The base64 worklet was unaffected, because it calls no imports.
+
+The fix:
+
+- [zipWorklet.ts](src/renderers/webview/zipWorklet.ts) is a self-contained ZIP
+  reader and inflater written as `'worklet'` functions with no imports. It
+  handles stored and deflate entries, and throws on ZIP64, encryption or
+  corruption, which sends that archive to fflate on the JS thread.
+  [zipWorklet.test.ts](src/__tests__/zipWorklet.test.ts) pins it byte for byte
+  against fflate.
+- `parkArchive` / `readParked` / `releaseParked` keep archives on the worker
+  runtime's own `globalThis`, at most two per runtime, least recently used
+  evicted first.
+- [offload.ts](src/renderers/webview/offload.ts) `openArchive()` returns a
+  handle. It crosses with the bytes once, then sends only names. If the archive
+  was evicted, it re-parks it from disk. It falls back to fflate on the JS
+  thread when no runtime exists or the archive can't be parked.
+  `unzipOffThread`, used by comics, ZIP archives and covers, now really runs on
+  the worker too.
+- [epub.ts](src/renderers/webview/epub.ts) holds the handle, not the bytes, so
+  a cached book no longer keeps its file alive on the JS side (part of A4).
+  `loadRest` and `loadImages` are memoised and release the archive once both
+  have finished. A failed parse releases it too.
+- `releaseAllArchives()` runs on background (`useAppLifecycle`) and on restore
+  (`resetAllCaches`).
+
+**Verify on device:** `[perf] prepare` for an EPUB should now show a small
+`unzip` figure reported from the worker, and one `cross` that is roughly the
+file size. Open a large EPUB, background the app, come back and scroll to the
+end: chapters must still arrive, because they are re-parked from disk.
 
 #### A3 — Phase 1 decompresses every image in the book · High
 [epub.ts:311-325](src/renderers/webview/epub.ts#L311-L325) adds every

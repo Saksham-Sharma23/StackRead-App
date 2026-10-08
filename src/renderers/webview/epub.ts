@@ -6,7 +6,7 @@ import { normalizeBookCss } from './bookCss'
 import { mimeForImage } from './bytes'
 // Images are registered as raw bytes here and encoded once, lazily, when the
 // renderer streams them — so no base64 work happens during parsing any more.
-import { listEntriesOffThread, unzipSomeOffThread, type OffloadLane } from './offload'
+import { openArchive, type ArchiveHandle, type OffloadLane } from './offload'
 import { now, type PrepareTrace } from '../../ui/perf'
 import { parseXml, asArray, attr, child, textOfNode } from './xml'
 import { sanitizeHtml } from './sanitize'
@@ -197,10 +197,48 @@ export async function loadEpubAsHtml(
    */
   trace?: PrepareTrace,
 ): Promise<EpubResult> {
-  const readStart = now()
-  const bytes = await new File(LIBRARY_DIR, storedName).bytes()
-  trace?.read(now() - readStart)
+  const source = new File(LIBRARY_DIR, storedName)
 
+  /*
+   * Reads the book off disk.
+   *
+   * A function rather than bytes, and that is the point of A2
+   * ([AUDIT4](../../../AUDIT4.md)). The archive is handed to the worker once
+   * and parked there, and `loadRest` / `loadImages` below hold the *handle* —
+   * so a cached book no longer keeps its whole file alive on the JS side. If
+   * the worker has evicted the archive by the time they run, the handle calls
+   * this again. Only the first read is a real part of opening the book, so
+   * only it is timed.
+   */
+  let firstRead = true
+  const load = async (): Promise<Uint8Array> => {
+    const started = now()
+    const bytes = await source.bytes()
+    if (firstRead) {
+      firstRead = false
+      trace?.read(now() - started)
+    }
+    return bytes
+  }
+
+  const archive = await openArchive(load, lane, trace)
+  try {
+    return await buildBook(archive, trace)
+  } catch (err) {
+    // A book that fails to parse must not keep its archive on the worker.
+    archive.release()
+    throw err
+  }
+}
+
+/**
+ * Phase 1 of an EPUB, plus the deferred phase-2 thunks, over an open archive.
+ *
+ * Every read goes through `archive.unzip`, which sends entry names to the
+ * worker rather than the book. That is what took an open from six full-archive
+ * copies across the worklet boundary to one.
+ */
+async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<EpubResult> {
   /*
    * ## Two phases, and why
    *
@@ -218,17 +256,17 @@ export async function loadEpubAsHtml(
    *
    * ## What the entry listing buys
    *
-   * fflate's filter sees each entry's central-directory record, so `originalSize`
-   * is available with nothing decompressed. That is what lets a book with no
-   * declared page list still report a page count on the first frame.
+   * The archive's listing comes from its central directory, taken when it was
+   * parked, so `originalSize` is available with nothing decompressed. That is
+   * what lets a book with no declared page list still report a page count on
+   * the first frame.
    */
-  const entries = await listEntriesOffThread(bytes, lane)
   const sizeOf = new Map<string, number>()
-  for (const entry of entries) sizeOf.set(entry.name, entry.originalSize)
+  for (const entry of archive.entries) sizeOf.set(entry.name, entry.originalSize)
 
   // The container names the OPF, and the OPF names everything else — so the
   // first read has to be these two before the rest can even be identified.
-  const bootstrap = await unzipSomeOffThread(bytes, ['META-INF/container.xml'], lane, trace)
+  const bootstrap = await archive.unzip(['META-INF/container.xml'], trace)
   const container = textOf(bootstrap, 'META-INF/container.xml')
   if (!container) throw new Error('Not a valid EPUB (no container.xml)')
 
@@ -249,7 +287,7 @@ export async function loadEpubAsHtml(
   )
   if (!opfPath) throw new Error('EPUB manifest not found')
 
-  const opfZip = await unzipSomeOffThread(bytes, [opfPath], lane, trace)
+  const opfZip = await archive.unzip([opfPath], trace)
   const opf = textOf(opfZip, opfPath)
   if (!opf) throw new Error('EPUB manifest unreadable')
 
@@ -325,7 +363,7 @@ export async function loadEpubAsHtml(
   }
   for (const href of firstSpine) wanted.add(resolvePath(opfPath, href))
 
-  const zip = await unzipSomeOffThread(bytes, [...wanted], lane, trace)
+  const zip = await archive.unzip([...wanted], trace)
 
   // ---- navigation: page numbers and chapter list ----------------------------
 
@@ -537,11 +575,54 @@ export async function loadEpubAsHtml(
    */
   const restSpine = spine.slice(FIRST_PAINT_SPINE_ITEMS)
 
-  const loadRest = async (): Promise<{ rest: string[]; totalPages: number }> => {
+  /*
+   * When the archive can leave the worker.
+   *
+   * Phase 2 needs the archive, and it runs after the first paint — so it stays
+   * parked until each thunk this book returns has finished once, then is
+   * released. Set below, once `imageList` says whether there is an image thunk.
+   * A thunk that is never called (the reader left before the first paint)
+   * leaves the archive to the worker's own eviction, which keeps at most two.
+   */
+  let outstanding = 0
+  const settle = (): void => {
+    outstanding -= 1
+    if (outstanding === 0) archive.release()
+  }
+
+  /*
+   * Phase 2 runs **at most once** per parse.
+   *
+   * The thunk lives in the cached `Prepared`, so every renderer mounted from
+   * that cache drains it: a reopen, a remounted neighbour. It appends to the
+   * shared `chapters` array, so running it twice delivered the rest of the book
+   * twice and doubled the page count ([AUDIT4 B2](../../../AUDIT4.md)). It is
+   * also what decides when the archive is released, which only works if it
+   * finishes once. A failure clears the memo so a later mount can retry.
+   */
+  let restDone: Promise<{ rest: string[]; totalPages: number }> | null = null
+
+  const loadRest = (): Promise<{ rest: string[]; totalPages: number }> => {
+    if (!restDone) {
+      restDone = assembleRest().then(
+        (result) => {
+          settle()
+          return result
+        },
+        (err: unknown) => {
+          restDone = null
+          throw err
+        },
+      )
+    }
+    return restDone
+  }
+
+  const assembleRest = async (): Promise<{ rest: string[]; totalPages: number }> => {
     if (restSpine.length) {
       const restPaths = restSpine.map((href) => resolvePath(opfPath, href))
-      const restZip = await unzipSomeOffThread(bytes, restPaths, lane)
-        for (const href of restSpine) {
+      const restZip = await archive.unzip(restPaths)
+      for (const href of restSpine) {
         const built = assembleChapter(href, restZip)
         if (!built) continue
         chapters.push(built.html)
@@ -599,13 +680,9 @@ export async function loadEpubAsHtml(
    * central directory is walked once either way, and forty separate crossings
    * would cost far more than the one this makes.
    */
-  const loadImages = async (): Promise<EpubImage[]> => {
+  const fetchImages = async (): Promise<EpubImage[]> => {
     if (!imageList.length) return []
-    const slice = await unzipSomeOffThread(
-      bytes,
-      imageList.map((i) => i.path),
-      lane,
-    )
+    const slice = await archive.unzip(imageList.map((i) => i.path))
     const out: EpubImage[] = []
     for (const ref of imageList) {
       const entry = slice[ref.path]
@@ -615,6 +692,33 @@ export async function loadEpubAsHtml(
     }
     return out
   }
+
+  /*
+   * Memoised like `loadRest`, for the same two reasons: a cached book must not
+   * decompress its images again for every renderer mounted from the cache, and
+   * the archive is released only once each thunk has finished.
+   */
+  let imagesDone: Promise<EpubImage[]> | null = null
+
+  const loadImages = (): Promise<EpubImage[]> => {
+    if (!imagesDone) {
+      imagesDone = fetchImages().then(
+        (result) => {
+          settle()
+          return result
+        },
+        (err: unknown) => {
+          imagesDone = null
+          throw err
+        },
+      )
+    }
+    return imagesDone
+  }
+
+  outstanding = (restSpine.length ? 1 : 0) + (imageList.length ? 1 : 0)
+  // Nothing deferred: phase 1 was the whole book, so the worker can drop it now.
+  if (!outstanding) archive.release()
 
   /*
    * The two-tier page count, with the second tier now provisional.

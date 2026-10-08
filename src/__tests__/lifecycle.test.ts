@@ -58,6 +58,7 @@ test('every id-keyed cache is invalidated by the lifecycle owner', () => {
     'resetPrefetchFailures',
     'forgetAllScroll',
     'clearSnippets',
+    'releaseAllArchives',
   ]) {
     assert.ok(lifecycle.includes(`${call}()`), `resetAllCaches must call ${call}`)
   }
@@ -286,9 +287,10 @@ test('a batch removal is undone as a whole', () => {
 })
 
 test('every format that loads bytes into JS has a size ceiling', () => {
-  // EPUB streams chapter by chapter and budgets its own images; PDF and image
-  // are drawn by native views straight from disk and never reach JS.
-  for (const format of ['text', 'markdown', 'html', 'docx', 'xlsx', 'csv', 'comic', 'archive']) {
+  // EPUB is included: it used to be exempt because it budgets its *images*,
+  // but the whole archive is still read into JS first (AUDIT4 A1). PDF and
+  // image are drawn by native views straight from disk and never reach JS.
+  for (const format of ['text', 'markdown', 'html', 'docx', 'xlsx', 'csv', 'comic', 'archive', 'epub']) {
     const limit = MAX_PREPARE_BYTES[format as FileEntry['format']]
     assert.equal(typeof limit, 'number', `${format} must declare a ceiling`)
     assert.ok(limit! > 0, `${format} ceiling must be positive`)

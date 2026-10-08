@@ -3,6 +3,7 @@ import { AppState } from 'react-native'
 
 import { flushLibrarySave } from '../storage/library'
 import { clearPrepared } from '../renderers/webview/prepareCache'
+import { releaseAllArchives } from '../renderers/webview/offload'
 import { usePendingRemoval } from '../store/pendingRemoval'
 
 /**
@@ -58,6 +59,10 @@ export function useAppLifecycle(): void {
       // Reparsing on return costs a second; being killed loses the user's
       // place. Dropping the cache is the cheaper side of that trade.
       clearPrepared()
+      // Same trade for the archives parked on the worker runtimes: whole books
+      // in native memory. A reader still open re-parks its book from disk the
+      // next time it needs a chapter.
+      releaseAllArchives()
     })
 
     return () => sub.remove()

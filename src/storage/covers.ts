@@ -1,6 +1,7 @@
 import { File } from 'expo-file-system'
 
 import { LIBRARY_DIR } from './paths'
+import { MAX_PREPARE_BYTES } from './formats'
 import { unzipOffThread } from '../renderers/webview/offload'
 
 /**
@@ -198,6 +199,17 @@ export async function extractCover(
 ): Promise<CoverBytes | null> {
   const file = new File(LIBRARY_DIR, storedName)
   if (!file.exists) return null
+
+  /*
+   * The same ceiling opening the file uses ([AUDIT4 A1](../../AUDIT4.md)).
+   *
+   * This path runs for every uncovered card on the board, with nothing the user
+   * asked for at stake — a book too large to open is too large to read whole
+   * into JS for a thumbnail. Returning null records the attempt as failed, so
+   * it is not retried on every launch.
+   */
+  const limit = MAX_PREPARE_BYTES[format]
+  if (limit !== undefined && (file.size ?? 0) > limit) return null
 
   let zip: Record<string, Uint8Array>
   try {
