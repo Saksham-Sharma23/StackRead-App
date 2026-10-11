@@ -16,19 +16,18 @@ import type { OpenRect } from '../ui/openTransition'
 import { importFiles } from '../storage/files'
 import { searchFiles, type SearchPage } from '../storage/db'
 import { exportLibrary, importLibraryArchive } from '../storage/backup'
-import { useLibrary } from '../store/library'
+import { snapshotLibrary, useLibrary } from '../store/library'
 import { usePendingRemoval } from '../store/pendingRemoval'
 import {
   useFileCount,
   useGroupCounts,
   useGroupsSorted,
-  usePdfsNeedingCovers,
 } from '../store/selectors'
+import { setVisibleGroups, useBoardActivity } from '../store/boardActivity'
 import { GroupRow } from '../components/GroupRow'
 import { ActionSheet, type SheetAction } from '../components/ActionSheet'
 import { UndoToasts } from '../components/UndoToast'
 import { NavBarScrim } from '../components/NavBarScrim'
-import { PdfCoverFactory } from '../components/PdfCoverFactory'
 import { LibrarySearch } from '../components/LibrarySearch'
 import { MoveSheetContainer } from '../components/MoveSheet'
 import { EmptyBoard } from '../components/EmptyBoard'
@@ -93,9 +92,6 @@ const SEARCH_PAGE = 8
  */
 const NO_RESULTS: SearchPage = { files: [], total: 0 }
 
-/** Shared empty set, so the factory's first read does not allocate. */
-const EMPTY_VISIBLE: ReadonlySet<string> = new Set<string>()
-
 /** Module scope, so the list never sees a new `keyExtractor` identity. */
 function groupKey(group: Group): string {
   return group.id
@@ -142,7 +138,6 @@ export function LibraryScreen({
    */
   const groupCounts = useGroupCounts()
   const fileCount = useFileCount()
-  const pdfsNeedingCovers = usePdfsNeedingCovers()
 
   /*
    * Where the empty state's "add files" lands.
@@ -184,17 +179,6 @@ export function LibraryScreen({
   const [pages, setPages] = useState(1)
 
   /*
-   * Which groups are on screen, for the cover factory's priority.
-   *
-   * A ref, not state. This is written on every scroll settle, and the only
-   * reader consults it when a capture slot opens — so as state it would
-   * re-render the entire board to inform a component that is not looking. Same
-   * reasoning as `store/scroll` living outside Zustand.
-   */
-  const visibleGroups = useRef<ReadonlySet<string>>(EMPTY_VISIBLE)
-  const readVisibleGroups = useCallback(() => visibleGroups.current, [])
-
-  /*
    * `FlatList` captures this on mount and throws if the identity changes, so
    * both this and the config below must be stable for the life of the screen.
    */
@@ -204,7 +188,12 @@ export function LibraryScreen({
       for (const item of viewableItems) {
         if (item.key) ids.add(item.key)
       }
-      visibleGroups.current = ids
+      /*
+       * Published for the cover factory's priority, which now lives at the app
+       * root (see `store/boardActivity`). A module variable, not state: it is
+       * written on every scroll settle and read only when a capture slot opens.
+       */
+      setVisibleGroups(ids)
     },
   ).current
 
@@ -225,6 +214,17 @@ export function LibraryScreen({
   const [sheet, setSheet] = useState<SheetState>({ kind: 'none' })
   const [importing, setImporting] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
+
+  /*
+   * Tell the root-level cover factory when the board is mid-import or
+   * mid-backup, so it stands down exactly as it did when it lived here.
+   * Cleared on unmount, so a board torn down mid-import cannot leave it parked.
+   */
+  const setBoardBusy = useBoardActivity((s) => s.setBusy)
+  useEffect(() => {
+    setBoardBusy(importing || busy !== null)
+  }, [importing, busy, setBoardBusy])
+  useEffect(() => () => setBoardBusy(false), [setBoardBusy])
 
   /*
    * The file the move sheet is acting on, held outside `sheet`.
@@ -450,7 +450,8 @@ export function LibraryScreen({
     setBusy('Building backup…')
     try {
       const Sharing = await import('expo-sharing')
-      const result = await exportLibrary()
+      // From memory, not the database: see `snapshotLibrary`.
+      const result = await exportLibrary(snapshotLibrary())
 
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(result.uri, {
@@ -847,16 +848,12 @@ ${result.uri}`)
       )}
 
       {/*
-        Rasterises page one of any PDF still showing a badge, one at a time and
-        only once the board has settled. Mounted here rather than at the app
-        root deliberately: this screen unmounts while the reader is open, which
-        is exactly when a second live pdfium document must not exist.
+        The PDF cover factory used to be mounted here, on the reasoning that this
+        screen unmounts while the reader is open. That unmount is the problem: it
+        tore down a half-loaded pdfium document the instant a card was tapped
+        (AUDIT4 A8). The factory now lives at the app root and drains when the
+        reader opens; this screen only reports whether it is busy.
       */}
-      <PdfCoverFactory
-        fileIds={pdfsNeedingCovers}
-        enabled={loaded && !busy && !importing}
-        visibleGroups={readVisibleGroups}
-      />
 
       {/*
         Below the toasts, above everything that scrolls: the board fades out

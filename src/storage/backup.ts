@@ -1,4 +1,4 @@
-import { File, Paths } from 'expo-file-system'
+import { File, FileMode, Paths, type FileHandle } from 'expo-file-system'
 import {
   Unzip,
   UnzipInflate,
@@ -10,8 +10,10 @@ import {
 } from 'fflate'
 
 import type { Library } from '../types'
-import { LIBRARY_DIR, ensureLibraryDir } from './paths'
-import { loadLibrary, replaceLibrary } from './library'
+import { LIBRARY_DIR, RESTORE_STAGING_DIR, ensureLibraryDir } from './paths'
+import { readLibrary } from './db'
+import { isSafeStoredName, validateLibrary } from './validateLibrary'
+import { flushLibrarySave, loadLibrary, replaceLibrary } from './library'
 import { getScroll, getProgress, setScroll, setProgress } from '../store/scroll'
 
 /**
@@ -42,6 +44,48 @@ export interface ExportResult {
   uri: string
   fileCount: number
   bytes: number
+}
+
+/**
+ * Bytes read per export chunk.
+ *
+ * 1MB: large enough that a 100MB book is a hundred native reads rather than the
+ * hundred thousand `readableStream()`'s 1KB default would make, small enough
+ * that holding one (plus the one read ahead) is nothing.
+ */
+const EXPORT_CHUNK_BYTES = 1024 * 1024
+
+/**
+ * Free space a restore always leaves untouched: the system, other apps and this
+ * app's own database and caches need room after it finishes.
+ */
+const DISK_RESERVE_BYTES = 200 * 1024 * 1024
+
+/** Far beyond any real library; refuses an archive built to exhaust the parser. */
+const MAX_ARCHIVE_ENTRIES = 200_000
+
+/**
+ * The one entry still assembled in memory. A library of 100,000 files is a few
+ * tens of megabytes of JSON; anything past this is not a backup.
+ */
+const MAX_INDEX_BYTES = 64 * 1024 * 1024
+
+/** A restore refused for a reason worth telling the user, rather than "unreadable". */
+class RestoreLimitError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RestoreLimitError'
+  }
+}
+
+/** Free space, or Infinity where the platform cannot say — never a reason to refuse. */
+function availableDiskSpace(): number {
+  try {
+    const free = Paths.availableDiskSpace
+    return typeof free === 'number' && Number.isFinite(free) && free > 0 ? free : Infinity
+  } catch {
+    return Infinity
+  }
 }
 
 function timestamp(): string {
@@ -97,10 +141,21 @@ async function withPositions(library: Library): Promise<Library> {
  * The caller is expected to hand this to the share sheet — writing directly to
  * Downloads would need broad storage permissions we otherwise never ask for.
  */
-export async function exportLibrary(): Promise<ExportResult> {
+export async function exportLibrary(current?: Library): Promise<ExportResult> {
   ensureLibraryDir()
 
-  const library = await withPositions(await loadLibrary())
+  /*
+   * What to back up: the library as it is *now*.
+   *
+   * This read the database, which lags memory by up to one debounce — and by
+   * everything since the last good save when saving is failing, which is
+   * precisely when the "back up your library" advice is given
+   * ([AUDIT4 C4](../../AUDIT4.md)). The board passes its in-memory library;
+   * the database is the fallback, flushed first so it is as current as it can
+   * be.
+   */
+  flushLibrarySave()
+  const library = await withPositions(current ?? (await loadLibrary()))
 
   const out = new File(Paths.cache, `stackread-${timestamp()}.zip`)
   if (out.exists) out.delete()
@@ -119,6 +174,8 @@ export async function exportLibrary(): Promise<ExportResult> {
    */
   const zip = new Zip()
   let failure: Error | null = null
+  /** Every write fflate has emitted so far, in order. */
+  let writeChain: Promise<void> = Promise.resolve()
   /** Resolves when fflate signals the central directory is written. */
   let finished: () => void
   const done = new Promise<void>((resolve) => {
@@ -134,9 +191,17 @@ export async function exportLibrary(): Promise<ExportResult> {
       return
     }
     written += chunk.length
-    // The writer queues, so awaiting is not required for correctness here; the
-    // final drain below is what guarantees everything reached disk.
-    void writer.write(chunk)
+    /*
+     * Chained, and awaited by `addEntry` after every push.
+     *
+     * The write used to be fire-and-forget, on the grounds that the writer
+     * queues. It does — without limit. Nothing ever waited, so every file was
+     * read and queued as fast as the disk could supply it, and a 2GB library
+     * tried to hold 2GB of pending writes ([AUDIT4 C4](../../AUDIT4.md)).
+     * Awaiting the chain after each chunk is the backpressure: the next chunk
+     * is not read until this one is on disk.
+     */
+    writeChain = writeChain.then(() => writer.write(chunk))
     if (final) finished()
   }
 
@@ -147,15 +212,44 @@ export async function exportLibrary(): Promise<ExportResult> {
    * `level: 0`: the payload is overwhelmingly PDFs, images and already-zipped
    * EPUBs, so compression costs time and saves almost nothing.
    */
-  const addEntry = (name: string, bytes: Uint8Array): void => {
+  const addEntry = async (name: string, bytes: Uint8Array): Promise<void> => {
     const entry = new ZipPassThrough(name)
     zip.add(entry)
     entry.push(bytes, true)
+    await writeChain
+  }
+
+  /**
+   * Adds one file, read and written a chunk at a time.
+   *
+   * `source.bytes()` read each file whole, so peak memory was the largest file
+   * in the library plus whatever writes were still queued. Through a handle,
+   * peak is one chunk. The previous chunk is held back by one read so the last
+   * push can say `final` — the entry's size and CRC are settled then.
+   */
+  const addFileEntry = async (name: string, source: File): Promise<void> => {
+    const entry = new ZipPassThrough(name)
+    zip.add(entry)
+    const handle = source.open(FileMode.ReadOnly)
+    try {
+      let held = handle.readBytes(EXPORT_CHUNK_BYTES)
+      for (;;) {
+        if (failure) return
+        const next = handle.readBytes(EXPORT_CHUNK_BYTES)
+        const last = next.length === 0
+        entry.push(held, last)
+        await writeChain
+        if (last) return
+        held = next
+      }
+    } finally {
+      handle.close()
+    }
   }
 
   try {
     // The index travels with the files so a restore needs nothing else.
-    addEntry('library.json', strToU8(JSON.stringify(library)))
+    await addEntry('library.json', strToU8(JSON.stringify(library)))
 
     for (const file of library.files) {
       if (failure) break
@@ -163,18 +257,21 @@ export async function exportLibrary(): Promise<ExportResult> {
       const source = new File(LIBRARY_DIR, file.storedName)
       if (!source.exists) continue
 
-      // Read, pushed, and released before the next file is touched — this is
-      // what keeps peak memory flat regardless of library size.
-      addEntry(`files/${file.storedName}`, await source.bytes())
+      // Streamed in chunks, each on disk before the next is read — this is
+      // what keeps peak memory flat regardless of file or library size.
+      await addFileEntry(`files/${file.storedName}`, source)
 
       if (file.thumb) {
         const thumb = new File(LIBRARY_DIR, file.thumb)
-        if (thumb.exists) addEntry(`files/${file.thumb}`, await thumb.bytes())
+        if (thumb.exists) await addFileEntry(`files/${file.thumb}`, thumb)
       }
     }
 
     zip.end()
     await done
+    // The central directory's writes, and a write error surfaces here rather
+    // than as an unhandled rejection.
+    await writeChain
     if (failure) throw failure
   } finally {
     // Closing drains anything still queued. In the failure path this also
@@ -203,14 +300,44 @@ export async function importLibraryArchive(archiveUri: string): Promise<ImportRe
 
   ensureLibraryDir()
 
-  const { library, written } = await unpackArchive(archive)
+  /*
+   * Stage, check, copy, commit ([AUDIT4 C3](../../AUDIT4.md)).
+   *
+   * The archive used to be written straight into the library directory with
+   * `create({ overwrite: true })`. "Additive" held only while no archive entry
+   * shared a name with a live file: one that did overwrote the live bytes
+   * before `replaceLibrary` committed, so a failure mid-restore left the
+   * *current* library pointing at foreign bytes — the one outcome a restore
+   * must never have.
+   *
+   * Now nothing in the library directory is touched until the whole archive
+   * has unpacked into staging and its index has parsed. Then:
+   *
+   *  - a staged name that is a **live** file belonging to a *different* entry
+   *    aborts the restore before anything is copied;
+   *  - one belonging to the *same* entry is left alone — library copies never
+   *    change, so the live bytes are the backup's bytes;
+   *  - everything else is copied in, one file at a time.
+   *
+   * `replaceLibrary` remains the single commit point. A kill before it leaves
+   * the previous library intact, plus files no index references, which the
+   * age-guarded prune reclaims.
+   */
+  let library: Library
+  const written = new Set<string>()
+  try {
+    library = await unpackArchive(archive)
+    commitStagedFiles(library, written)
+  } finally {
+    clearStaging()
+  }
 
   /*
    * Commit, then reclaim.
    *
    * `replaceLibrary` is the commit point and everything before it is additive,
    * so this is the first irreversible line in the function. Up to here a kill
-   * leaves the previous library entirely intact — see `unpackArchive`.
+   * leaves the previous library entirely intact.
    */
 
   /*
@@ -256,7 +383,7 @@ export async function importLibraryArchive(archiveUri: string): Promise<ImportRe
 }
 
 /**
- * Streams the archive into the library directory, returning its index.
+ * Streams the archive into the staging directory, returning its index.
  *
  * ## Why this does not clear the library first
  *
@@ -268,13 +395,14 @@ export async function importLibraryArchive(archiveUri: string): Promise<ImportRe
  * SQLite index still describing the old library
  * ([AUDIT2 §1.1](../../AUDIT2.md), [AUDIT §1.2](../../AUDIT.md)).
  *
- * So nothing is deleted here at all. Entries are streamed straight into
- * `LIBRARY_DIR`, which is **additive**: until `replaceLibrary` commits the new
- * index, the old index and every file it references are still present and still
- * consistent. A kill at any point during this function leaves the previous
- * library working, plus some unreferenced bytes that `pruneOrphans` reclaims.
+ * So nothing is deleted here at all. Entries are streamed into
+ * `RESTORE_STAGING_DIR`, outside the library: until `commitStagedFiles` and then
+ * `replaceLibrary` run, the old index and every file it references are
+ * untouched. (They used to stream straight into `LIBRARY_DIR`, which was
+ * additive only until an entry shared a live file's name and overwrote it —
+ * [AUDIT4 C3](../../AUDIT4.md).)
  *
- * ## Why not unpack to a sibling directory and rename it into place
+ * ## Why staging is copied in, not renamed into place
  *
  * That was the plan ([TASKS2 R1-2](../../TASKS2.md)) and it is the textbook
  * answer, but the swap needs a directory rename onto a destination that does
@@ -299,12 +427,31 @@ export async function importLibraryArchive(archiveUri: string): Promise<ImportRe
  * last, and rejecting one of those leaves a few orphans behind. That is the
  * honest trade for never holding the whole library in memory.
  */
-async function unpackArchive(archive: File): Promise<{ library: Library; written: Set<string> }> {
+async function unpackArchive(archive: File): Promise<Library> {
   let indexJson: string | null = null
   let library: Library | null = null
-  /** Basenames this restore wrote, so the prune below cannot delete them. */
-  const written = new Set<string>()
   let failure: Error | null = null
+
+  // A fresh staging directory: anything left by an interrupted restore is stale.
+  clearStaging()
+
+  /*
+   * How much this restore may write ([AUDIT4 D4](../../AUDIT4.md)).
+   *
+   * Free space less a reserve, so a restore can never fill the device — a phone
+   * with no free storage misbehaves far beyond this app. Checked up front
+   * against the archive's own size (what is staged is at least that, since our
+   * backups store rather than compress), and again as every chunk is written.
+   */
+  const diskBudget = availableDiskSpace() - DISK_RESERVE_BYTES
+  if (diskBudget < (archive.size ?? 0)) {
+    throw new RestoreLimitError('There isn’t enough free space on this device to restore this backup.')
+  }
+  let stagedBytes = 0
+  let entryCount = 0
+  let indexBytes = 0
+
+  RESTORE_STAGING_DIR.create({ intermediates: true })
 
   const unzip = new Unzip()
   // Stored *and* deflated. Our own exports use `ZipPassThrough`, but a user can
@@ -322,6 +469,11 @@ async function unpackArchive(archive: File): Promise<{ library: Library; written
           failure ??= err
           return
         }
+        indexBytes += chunk.length
+        if (indexBytes > MAX_INDEX_BYTES) {
+          failure ??= new RestoreLimitError('This backup’s index is too large to restore.')
+          return
+        }
         parts.push(chunk)
         if (final) indexJson = strFromU8(concat(parts))
       }
@@ -333,48 +485,67 @@ async function unpackArchive(archive: File): Promise<{ library: Library; written
 
     const name = entry.name.slice('files/'.length)
     // Never let a crafted archive write outside the library directory.
-    if (!name || name.includes('/') || name.includes('\\') || name.includes('..')) return
+    // The same rule the index's stored names must pass (`validateLibrary`), so
+    // the two inputs reaching the library directory cannot drift apart.
+    if (!isSafeStoredName(name)) return
+
+    entryCount += 1
+    if (entryCount > MAX_ARCHIVE_ENTRIES) {
+      failure ??= new RestoreLimitError('This backup has more entries than StackRead can restore.')
+      return
+    }
 
     /*
-     * Buffered per entry, then written once.
+     * Written chunk by chunk, synchronously, inside fflate's own callback
+     * ([AUDIT4 D4](../../AUDIT4.md)).
      *
-     * `expo-file-system` has no append, so incremental writes would mean
-     * holding a `writableStream` per entry — and fflate delivers chunks
-     * synchronously inside `push`, so those writes could not be awaited in
-     * order without stalling the parser. One file in memory at a time is the
-     * bound that matters: peak is the largest single file rather than the whole
-     * library, which is the entire point of this rewrite.
+     * Each entry used to be gathered whole in memory and written once, on the
+     * grounds that `expo-file-system` had no append. It has a `FileHandle`,
+     * whose `writeBytes` is synchronous and advances its own offset — so a
+     * chunk can go to disk the moment fflate emits it, and no entry is ever in
+     * memory whole. A crafted backup with one enormous entry used to be an
+     * out-of-memory kill; now it is bounded by disk space, checked below.
+     *
+     * Blocking the parser on the write is still the behaviour worth having: it
+     * stops a fast archive queueing decompressed data faster than the disk can
+     * take it.
      */
-    const parts: Uint8Array[] = []
+    // Into staging, never the library: see `importLibraryArchive`.
+    const target = new File(RESTORE_STAGING_DIR, name)
+    let handle: FileHandle | null = null
+    const closeHandle = (): void => {
+      try {
+        handle?.close()
+      } catch {
+        // Already closed or never opened.
+      }
+      handle = null
+    }
+
     entry.ondata = (err, chunk, final) => {
-      if (err) {
-        failure ??= err
+      if (failure) {
+        closeHandle()
         return
       }
-      parts.push(chunk)
-      if (!final) return
-
-      const bytes = concat(parts)
-      // Length is cleared so the buffer is collectable before the next entry
-      // starts, rather than at the end of the archive.
-      parts.length = 0
-
-      /*
-       * Written synchronously, inside fflate's own callback.
-       *
-       * `File.write` is synchronous, so there is nothing to await and no
-       * ordering to manage — and blocking the parser on the disk write is the
-       * behaviour worth having: it is what stops a fast archive queueing
-       * decompressed entries faster than they can be written, which would put
-       * the whole library back in memory by a different route.
-       */
+      if (err) {
+        failure = err
+        closeHandle()
+        return
+      }
       try {
-        const target = new File(LIBRARY_DIR, name)
-        target.create({ overwrite: true })
-        target.write(bytes)
-        written.add(name)
-      } catch (err) {
-        failure ??= err instanceof Error ? err : new Error(String(err))
+        if (!handle) {
+          target.create({ overwrite: true })
+          handle = target.open(FileMode.WriteOnly)
+        }
+        stagedBytes += chunk.length
+        if (stagedBytes > diskBudget) {
+          throw new RestoreLimitError('There isn’t enough free space on this device to restore this backup.')
+        }
+        if (chunk.length) handle.writeBytes(chunk)
+        if (final) closeHandle()
+      } catch (e) {
+        failure = e instanceof Error ? e : new Error(String(e))
+        closeHandle()
       }
     }
     entry.start()
@@ -385,37 +556,105 @@ async function unpackArchive(archive: File): Promise<{ library: Library; written
    *
    * Reading the archive with `bytes()` would put the whole thing in memory
    * before the first entry was even seen, which is half of what this function
-   * exists to stop.
+   * exists to stop. Read through a handle in 1MB chunks rather than
+   * `readableStream()`, whose 1KB default made a 1GB backup a million reads;
+   * the yield between chunks keeps the UI responsive.
    */
-  const reader = archive.readableStream().getReader()
+  const reader = archive.open(FileMode.ReadOnly)
   try {
     for (;;) {
-      const { done, value } = await reader.read()
-      if (done) {
+      const chunk = reader.readBytes(EXPORT_CHUNK_BYTES)
+      if (chunk.length === 0) {
         unzip.push(new Uint8Array(0), true)
         break
       }
-      if (value) unzip.push(value, false)
+      unzip.push(chunk, false)
       if (failure) break
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
     }
   } finally {
-    reader.releaseLock()
+    reader.close()
   }
 
-  if (failure) throw new Error('This backup could not be read')
+  // A limit is worth naming; anything else is "could not be read". Read through
+  // a typed alias: `failure` is only assigned inside fflate's callbacks, so the
+  // compiler narrows it to null here.
+  const failed = failure as Error | null
+  if (failed instanceof RestoreLimitError) throw failed
+  if (failed) throw new Error('This backup could not be read')
   if (indexJson === null) throw new Error('This is not a StackRead backup')
 
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(indexJson) as Library
-    if (!Array.isArray(parsed.groups) || !Array.isArray(parsed.files)) {
-      throw new Error('shape')
-    }
-    library = parsed
+    parsed = JSON.parse(indexJson)
   } catch {
     throw new Error('This backup’s index is unreadable')
   }
+  /*
+   * Field by field, not just "two arrays" ([AUDIT4 D2](../../AUDIT4.md)).
+   * Stored names become paths, ids become keys, formats pick renderers — the
+   * validator rejects the whole archive on the first entry that would misuse
+   * any of them, before a single staged file is copied into the library.
+   */
+  library = validateLibrary(parsed)
 
-  return { library, written }
+  return library
+}
+
+/**
+ * Moves the staged files into the library, refusing any that would replace a
+ * live file belonging to a different entry. Adds every name the restored index
+ * may rely on to `written`. Throws before copying anything if there is a
+ * conflict.
+ *
+ * Copy-then-delete per file rather than a move: Android's `moveSync` cannot be
+ * trusted with a destination that does not exist yet (DETAIL.md §6.3), while
+ * `copySync` is what every import already uses. Deleting each staged file once
+ * copied keeps the extra disk the restore needs to about one file.
+ */
+function commitStagedFiles(library: Library, written: Set<string>): void {
+  const owners = (lib: Library): Map<string, string> => {
+    const map = new Map<string, string>()
+    for (const f of lib.files) {
+      map.set(f.storedName, f.id)
+      if (f.thumb) map.set(f.thumb, f.id)
+    }
+    return map
+  }
+  const live = owners(readLibrary())
+  const restored = owners(library)
+  const staged = RESTORE_STAGING_DIR.list().filter((item): item is File => item instanceof File)
+
+  // Check everything before copying anything, so a refusal changes nothing.
+  for (const item of staged) {
+    const liveOwner = live.get(item.name)
+    if (liveOwner !== undefined && liveOwner !== restored.get(item.name)) {
+      throw new Error('This backup conflicts with files already in your library, so nothing was changed.')
+    }
+  }
+
+  for (const item of staged) {
+    const target = new File(LIBRARY_DIR, item.name)
+    if (live.has(item.name) && target.exists) {
+      // The same entry's own file: identical bytes, already in place.
+      written.add(item.name)
+      continue
+    }
+    // Not referenced by the live index: an orphan at most, safe to replace.
+    if (target.exists) target.delete()
+    item.copySync(target)
+    written.add(item.name)
+    item.delete()
+  }
+}
+
+/** Removes the staging directory, whatever state it is in. Never throws. */
+function clearStaging(): void {
+  try {
+    if (RESTORE_STAGING_DIR.exists) RESTORE_STAGING_DIR.delete()
+  } catch {
+    // Left for the next restore, which clears it before starting.
+  }
 }
 
 /** Joins streamed chunks. One allocation, sized once. */

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { File } from 'expo-file-system'
+import { File, FileMode } from 'expo-file-system'
 
 import type { FileEntry } from '../types'
 import { LIBRARY_DIR } from '../storage/paths'
-import { canSnippet, snippetFrom, SNIPPET_READ_BYTES } from '../storage/snippet'
+import { canSnippet, decodePrefix, snippetFrom, SNIPPET_READ_BYTES } from '../storage/snippet'
 
 /**
  * Reads the opening words of a document, for a card with no cover.
@@ -85,15 +85,24 @@ export function useSnippet(file: FileEntry): string | null {
         const source = new File(LIBRARY_DIR, file.storedName)
         if (source.exists) {
           /*
-           * The whole file is read, then sliced.
+           * Only the first `SNIPPET_READ_BYTES`, through a file handle.
            *
-           * `expo-file-system` has no ranged text read, and adding a byte-range
-           * path here would mean decoding a partial UTF-8 sequence at the
-           * boundary. Every format this runs for is capped by
-           * `MAX_PREPARE_BYTES` well below anything that matters, and the read
-           * happens once per file for the life of the process.
+           * This used to read the whole file and slice it, on the grounds
+           * that `MAX_PREPARE_BYTES` capped every format it runs for. It does
+           * not: that ceiling is checked when a file is *opened*, and imports
+           * are unlimited — so a 400MB log on the board became a 400MB string
+           * every launch, before the user touched anything
+           * ([AUDIT4 A7](../../AUDIT4.md)).
+           *
+           * `decodePrefix` handles a read that ends mid-character. The read is
+           * synchronous but a couple of kilobytes, so it costs nothing.
            */
-          text = (await source.text()).slice(0, SNIPPET_READ_BYTES)
+          const handle = source.open(FileMode.ReadOnly)
+          try {
+            text = decodePrefix(handle.readBytes(SNIPPET_READ_BYTES))
+          } finally {
+            handle.close()
+          }
         }
       } catch {
         // A preview is decoration. An unreadable file keeps its badge, and the

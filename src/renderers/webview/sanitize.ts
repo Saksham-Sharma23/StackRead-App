@@ -49,25 +49,10 @@ const VOID_OF_MEANING = /<(script|iframe|object|embed|applet|frame|frameset|nosc
 const DANGLING = /<\/?(script|iframe|object|embed|applet|frame|frameset|noscript|base|meta|link)\b[^>]*>/gi
 
 /**
- * Event-handler attributes, including namespaced ones (`ev:onload`).
- *
- * The value is matched as quoted, single-quoted, or bare, because an unquoted
- * handler is legal HTML and a naive `on\w+="[^"]*"` walks straight past it.
+ * Attributes whose value is a URL, matched on the *local* name so `xlink:href`
+ * is covered as well as `href`. Same list as `isUrlAttr` in the viewer.
  */
-const EVENT_ATTR = /\s(?:[a-z0-9_-]+:)?on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi
-
-/** Inline styles — see the note above on why these go. */
-const STYLE_ATTR = /\s(?:[a-z0-9_-]+:)?style\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi
-
-/**
- * URL attributes carrying an executable scheme.
- *
- * Covers `xlink:href` as well as `href`/`src`, and tolerates the whitespace and
- * entity padding (`java\tscript:`, `java&#09;script:`) used to slip past a
- * literal prefix match.
- */
-const SCRIPT_URL =
-  /\s(?:[a-z0-9_-]+:)?(?:href|src|action|formaction|data|poster)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi
+const URL_ATTRS: ReadonlySet<string> = new Set(['href', 'src', 'action', 'formaction', 'data', 'poster'])
 
 /*
  * The `\s*` between every letter defeats the padding trick: `java script:` and
@@ -81,18 +66,12 @@ const SCRIPT_URL =
 const EXECUTABLE_SCHEME =
   /^(?:j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t\s*:|v\s*b\s*s\s*c\s*r\s*i\s*p\s*t\s*:|d\s*a\s*t\s*a\s*:\s*t\s*e\s*x\s*t\s*\/\s*h\s*t\s*m\s*l)/i
 
-/** Strips the quoting and HTML entities an attribute value may hide behind. */
-function attrValue(pair: string): string {
-  const eq = pair.indexOf('=')
-  if (eq < 0) return ''
-  let v = pair.slice(eq + 1).trim()
-  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-    v = v.slice(1, -1)
-  }
+/** Strips the HTML entities and padding an attribute value may hide a scheme behind. */
+function decodeAttrValue(raw: string): string {
   // Decode numeric and named entities well enough to see the scheme through
   // `java&#09;script:` and friends. Not a general entity decoder — it only has
   // to defeat padding inside a scheme prefix.
-  return v
+  return raw
     .replace(/&#x([0-9a-f]+);?/gi, (_, h: string) => String.fromCharCode(parseInt(h, 16)))
     .replace(/&#(\d+);?/g, (_, d: string) => String.fromCharCode(parseInt(d, 10)))
     .replace(/&(tab|newline);/gi, ' ')
@@ -123,12 +102,150 @@ export function sanitizeHtml(html: string): string {
   // two passes agreeing about what a document is allowed to contain.
   out = out.replace(/<style\b[\s\S]*?<\/style\s*>/gi, '')
 
-  out = out.replace(EVENT_ATTR, '')
-  out = out.replace(STYLE_ATTR, '')
+  // Attributes last, on what is left: handlers, inline styles, executable URLs.
+  return rewriteStartTags(out)
+}
 
-  out = out.replace(SCRIPT_URL, (match) =>
-    EXECUTABLE_SCHEME.test(attrValue(match)) ? '' : match,
-  )
+/**
+ * Whether an attribute may stay on an element.
+ *
+ * Judged on the local name (after any `ns:` prefix), so `ev:onload` is a handler
+ * and `xlink:href` a URL attribute.
+ */
+function keepAttribute(name: string, value: string | null): boolean {
+  const lower = name.toLowerCase()
+  const colon = lower.lastIndexOf(':')
+  const local = colon >= 0 ? lower.slice(colon + 1) : lower
+  if (local.startsWith('on')) return false
+  if (local === 'style') return false
+  if (value !== null && URL_ATTRS.has(local) && EXECUTABLE_SCHEME.test(decodeAttrValue(value))) {
+    return false
+  }
+  return true
+}
+
+function isSpace(ch: string): boolean {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f'
+}
+
+function isAsciiLetter(code: number): boolean {
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122)
+}
+
+/**
+ * Rewrites every start tag, attribute by attribute, the way the HTML tokenizer
+ * reads it ([AUDIT4 D1](../../../AUDIT4.md)).
+ *
+ * ## Why not attribute regexes
+ *
+ * They were regexes — `\s on…= …` — and HTML does not need whitespace between
+ * attributes. A `/` separates them too: after a tag name (`<svg/onload=…>`),
+ * after a quoted value (`<img src="x"/onerror=…>`) and after a bare attribute
+ * name (`<details open/ontoggle=…>`). All three walked past the `\s` and are
+ * live handlers to a browser. Requiring `[\s/]` instead would have caught them
+ * and broken ordinary markup: a `/on…=` inside a quoted URL
+ * (`href="https://x/onboarding=1"`) would have been cut out along with the
+ * quote that closes the value. Telling those apart is the tokenizer's job, so
+ * this does what the tokenizer does.
+ *
+ * ## What it does
+ *
+ * For each `<name …>`: reads attributes per the HTML tokenizer's rules (any
+ * run of whitespace and `/` separates them; values are double-quoted,
+ * single-quoted or bare; `>` inside a quoted value does not end the tag), drops
+ * the ones `keepAttribute` rejects, and writes the tag back with every value
+ * double-quoted. A tag left unterminated at the end of the input is dropped —
+ * the browser would discard it too. End tags, comments and stray `<` pass
+ * through untouched.
+ *
+ * Re-quoting normalises markup the browser would parse identically: `"` inside
+ * a value becomes `&quot;`, which decodes back to the same character.
+ */
+function rewriteStartTags(html: string): string {
+  const n = html.length
+  let out = ''
+  let i = 0
+
+  while (i < n) {
+    const lt = html.indexOf('<', i)
+    if (lt < 0) {
+      out += html.slice(i)
+      break
+    }
+    out += html.slice(i, lt)
+    if (!isAsciiLetter(html.charCodeAt(lt + 1))) {
+      out += '<'
+      i = lt + 1
+      continue
+    }
+
+    let j = lt + 1
+    while (j < n && !isSpace(html[j]) && html[j] !== '/' && html[j] !== '>') j++
+    const tagName = html.slice(lt + 1, j)
+
+    const kept: string[] = []
+    let selfClosing = false
+    let closed = false
+
+    while (j < n) {
+      const ch = html[j]
+      if (isSpace(ch)) {
+        j++
+        continue
+      }
+      if (ch === '/') {
+        if (html[j + 1] === '>') {
+          selfClosing = true
+          closed = true
+          j += 2
+          break
+        }
+        // A `/` not followed by `>` is just a separator.
+        j++
+        continue
+      }
+      if (ch === '>') {
+        closed = true
+        j++
+        break
+      }
+
+      // The name runs to whitespace, `/`, `>` or `=`. A leading `=` belongs
+      // to the name, as it does for the tokenizer.
+      let k = j + 1
+      while (k < n && !isSpace(html[k]) && html[k] !== '/' && html[k] !== '>' && html[k] !== '=') k++
+      const attrName = html.slice(j, k)
+      j = k
+      while (j < n && isSpace(html[j])) j++
+
+      let value: string | null = null
+      if (html[j] === '=') {
+        j++
+        while (j < n && isSpace(html[j])) j++
+        const quote = html[j]
+        if (quote === '"' || quote === "'") {
+          const end = html.indexOf(quote, j + 1)
+          value = html.slice(j + 1, end < 0 ? n : end)
+          j = end < 0 ? n : end + 1
+        } else {
+          let k2 = j
+          while (k2 < n && !isSpace(html[k2]) && html[k2] !== '>') k2++
+          value = html.slice(j, k2)
+          j = k2
+        }
+      }
+
+      if (keepAttribute(attrName, value)) {
+        kept.push(value === null ? attrName : `${attrName}="${value.replace(/"/g, '&quot;')}"`)
+      }
+    }
+
+    // Unterminated at the end of the input: the browser drops it, and so do we.
+    if (!closed) break
+
+    out += `<${tagName}${kept.length ? ` ${kept.join(' ')}` : ''}${selfClosing ? ' /' : ''}>`
+    i = j
+  }
 
   return out
 }

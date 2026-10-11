@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 
-import { canSnippet, snippetFrom, trimToWord } from '../storage/snippet.ts'
+import { canSnippet, decodePrefix, snippetFrom, trimToWord } from '../storage/snippet.ts'
 
 /**
  * Card previews for the formats that would otherwise show only a badge.
@@ -135,4 +135,28 @@ test('a long document is bounded to roughly one card of text', () => {
   const out = snippetFrom('word '.repeat(500), 'text')
   assert.ok(out)
   assert.ok(out.length <= 221, `preview too long: ${out.length}`)
+})
+
+/* ==================== AUDIT4 A7: bounded reads ==================== */
+
+test('decodePrefix drops a multi-byte character the read cut in half', () => {
+  const full = new TextEncoder().encode('Résumé — 文书')
+  // Every possible cut point must decode without throwing, to a prefix of the text.
+  for (let n = 0; n <= full.length; n++) {
+    const text = decodePrefix(full.subarray(0, n))
+    assert.ok('Résumé — 文书'.startsWith(text), `cut at ${n} produced ${JSON.stringify(text)}`)
+  }
+  assert.equal(decodePrefix(full), 'Résumé — 文书')
+})
+
+test('decodePrefix keeps a four-byte character only when it is whole', () => {
+  const bytes = new TextEncoder().encode('a📚')
+  assert.equal(decodePrefix(bytes), 'a📚')
+  assert.equal(decodePrefix(bytes.subarray(0, 3)), 'a')
+})
+
+test('decodePrefix reads non-UTF-8 text as Latin-1 rather than giving up', () => {
+  // "café" in Windows-1252 / Latin-1: é is a lone 0xE9, invalid as UTF-8.
+  const latin1 = new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x20, 0x6e, 0x6f, 0x69, 0x72])
+  assert.equal(decodePrefix(latin1), 'café noir')
 })

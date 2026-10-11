@@ -12,6 +12,7 @@ import { useLibrary } from '../store/library'
 import { usePageNav } from '../store/pageNav'
 import { useSearch } from '../store/search'
 import { usePdfSearch } from './usePdfSearch'
+import { acquirePdfium, type PdfiumLease } from '../storage/pdfiumLease'
 import { useTheme } from '../ui/theme'
 import { Spring } from '../ui/motion'
 import type { RendererProps } from './types'
@@ -28,12 +29,68 @@ import type { RendererProps } from './types'
  */
 const AnimatedPdf = Animated.createAnimatedComponent(Pdf)
 
+/**
+ * How long after `onLoadComplete` the document counts as settled.
+ *
+ * `onLoadComplete` means parsed, not painted — pdfium renders the first pages
+ * on its own thread afterwards. Matches the 400ms the cover capture already
+ * waits for the same reason, with headroom for a full screen of pages.
+ */
+const FIRST_PAGES_MS = 600
+
 export function PdfRenderer({ file, active, fullscreen, onScaleChange }: RendererProps) {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
 
   const [error, setError] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
+
+  /*
+   * The right to open a pdfium document ([AUDIT4 A8](../../AUDIT4.md)).
+   *
+   * The cover factory may be mid-capture when a PDF is opened. It drains
+   * rather than aborting — letting its document finish loading before it
+   * unmounts — and this waits for that, so two documents are never live at
+   * once. The wait is at most one parse, behind the open transition and the
+   * loading cover. Released on unmount; a lease granted after this renderer is
+   * gone is handed straight back.
+   */
+  const [leased, setLeased] = useState(false)
+  const leaseRef = useRef<PdfiumLease | null>(null)
+
+  useEffect(() => {
+    let gone = false
+    void acquirePdfium(`reader:${file.id}`).then((lease) => {
+      if (gone) {
+        lease.release()
+        return
+      }
+      leaseRef.current = lease
+      setLeased(true)
+    })
+    return () => {
+      gone = true
+      leaseRef.current?.release()
+      leaseRef.current = null
+    }
+  }, [file.id])
+
+  /*
+   * Marks the document settled once it has loaded and its first pages have had
+   * time to render. Until then, `App` holds a closing reader mounted rather than
+   * tearing the document down mid-load (`whenPdfiumSettled`).
+   */
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const markSettled = useCallback(() => {
+    if (settleTimer.current) return
+    settleTimer.current = setTimeout(() => leaseRef.current?.markSettled(), FIRST_PAGES_MS)
+  }, [])
+  useEffect(
+    () => () => {
+      if (settleTimer.current) clearTimeout(settleTimer.current)
+    },
+    [],
+  )
 
   /**
    * The view handed to `captureRef` for the cover snapshot.
@@ -225,7 +282,14 @@ export function PdfRenderer({ file, active, fullscreen, onScaleChange }: Rendere
     [onScaleChange],
   )
 
-  const handleError = useCallback((e: unknown) => setError(String(e)), [])
+  const handleError = useCallback(
+    (e: unknown) => {
+      // A document that failed to load is not loading; nothing to wait for.
+      leaseRef.current?.markSettled()
+      setError(String(e))
+    },
+    [],
+  )
 
   // Hoisted with the rest: an inline arrow here is a new render prop on every
   // render of a component that re-renders on every seek.
@@ -237,10 +301,11 @@ export function PdfRenderer({ file, active, fullscreen, onScaleChange }: Rendere
   const handleLoadComplete = useCallback(
     (numberOfPages: number) => {
       setReady(true)
+      markSettled()
       report(file.id, initialPage, numberOfPages)
       if (active) captureCover()
     },
-    [file.id, initialPage, report, active, captureCover],
+    [file.id, initialPage, report, active, captureCover, markSettled],
   )
 
   if (error) {
@@ -256,7 +321,7 @@ export function PdfRenderer({ file, active, fullscreen, onScaleChange }: Rendere
     // The capture target. Wrapping the Pdf view rather than the whole screen so
     // the cover is the page itself, with no reader chrome baked into it.
     <View ref={pdfViewRef} collapsable={false} style={[styles.fill, { backgroundColor: theme.gutter }]}>
-      <AnimatedPdf
+      {leased && <AnimatedPdf
         /*
          * Memoised, and this is not cosmetic.
          *
@@ -299,7 +364,7 @@ export function PdfRenderer({ file, active, fullscreen, onScaleChange }: Rendere
           // collapses to zero in fullscreen.
           insetStyle,
         ]}
-      />
+      />}
 
       {/*
         A PDF that has been opened before carries a captured page-1 cover, so

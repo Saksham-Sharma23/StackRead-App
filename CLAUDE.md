@@ -56,7 +56,7 @@ Expo SDK 57.0.18 · RN 0.86.3 (New Architecture, cannot be disabled) · React
 | `react-native-pdf` | PDF | pdfium; largest dependency (~9 MB) |
 | `react-native-webview` 13.16 | all HTML-ish formats | deliberately inert — §5.4 |
 | `fflate` | zip | streaming `Unzip` for restore, `unzipSync` in worklets |
-| `fast-xml-parser` | EPUB OPF/NCX | **currently in the startup bundle** — AUDIT3 §3.1 |
+| `fast-xml-parser` | EPUB OPF/NCX | kept out of startup; pinned by `startupBundle.test.ts` (AUDIT4 E2) |
 | `mammoth` | DOCX → HTML | lazy-imported |
 | `xlsx` (SheetJS) | spreadsheets | lazy-imported; CDN tarball, not npm |
 | `thumbhash` | blurred placeholders | 18 KB |
@@ -237,12 +237,21 @@ exception (scoped `allowingReadAccessToURL` for EPUB extraction) is deferred
 precisely so it gets its own review.
 
 **Two sanitiser passes, and both are load-bearing.**
-[sanitize.ts](src/renderers/webview/sanitize.ts) (regex, native side) runs
-before the content crosses the bridge; `sanitize()` in
+[sanitize.ts](src/renderers/webview/sanitize.ts) (native side: element regexes
+plus a start-tag tokenizer for attributes) runs before the content crosses the
+bridge; `sanitize()` in
 [viewerHtml.ts](src/renderers/webview/viewerHtml.ts) (DOM, inside the viewer) is
-structurally stronger but runs next to the JS context. Their scope lists agree
+structurally stronger but runs next to the JS context. It runs on the first
+paint **and on every streamed batch**. Their scope lists agree
 deliberately — two sanitisers that disagree about their own scope are worse than
-one, because the gap is invisible in both.
+one, because the gap is invisible in both. Attributes are tokenised, not
+regex-matched, because HTML separates attributes with `/` as well as whitespace
+(`<svg/onload=…>`) — AUDIT4 D1.
+
+**Behind both, a Content-Security-Policy** in the viewer's `<head>`:
+`default-src 'none'` and a per-document script nonce. Content can fetch nothing
+and inline handlers cannot run, whatever the sanitisers miss. Do not add a
+source to it without the same explicit review the WebView props get.
 
 **`escapeHtml` on the archive-listing path is not cosmetic.** `TEXT_RE` matches
 `.html`, `.js`, `.ts`, `.css` and inlines those entries. Swapping it for
@@ -347,7 +356,7 @@ src/
                      library · libraryDiff · lifecycle · formats
   store/             Zustand stores; scroll is MMKV, not React
   ui/                theme · motion · perf · openTransition
-  __tests__/         pure logic, Node's own runner — 376 tests
+  __tests__/         pure logic, Node's own runner — 489 tests
 modules/pdf-text/    Expo module bridging pdfium text + search
 scripts/             tune-gradle · setup-signing · release-check · dev tools
 .github/workflows/   android-release.yml — CI release build
@@ -398,13 +407,21 @@ lines:
 
 ### Current state
 
-R0–R6 of [TASKS2.md](TASKS2.md) are complete; **R7 (ship readiness) is open** —
-crash reporting, root error boundary, `versionCode` automation. 376 tests pass.
+R0–R6 of [TASKS2.md](TASKS2.md) are complete. [AUDIT4.md](AUDIT4.md) — crash
+paths, data integrity, security, release — has every A–E finding fixed and
+recorded in its status table; **none of it is yet verified on a device**, and
+its device checklist is the next step. 489 tests pass.
 
-[AUDIT3.md](AUDIT3.md) lists the open findings. The two that matter:
+Still open from TASKS2 **R7 (ship readiness)**: crash reporting (the hook is
+`ui/crashLog.ts`, which already scrubs paths) and `versionCode` automation.
+The root error boundary R7 asked for now exists (AUDIT4 A10).
 
-1. **`fast-xml-parser` is in the startup bundle** — `lifecycle.ts` statically
-   imports `prefetch.ts`, which drags `prepare → epub → fast-xml-parser` past
-   the `lazy(ReaderScreen)` boundary. ~1.4 MB evaluated on every cold start.
-2. **The restore path validates shape, not contents** — a hostile
-   `library.json` supplies `storedName` values that become filesystem paths.
+Two rules AUDIT4 added that are easy to undo by accident:
+
+1. **Nothing heavy in the startup graph.** `startupBundle.test.ts` walks the
+   static imports from `index.ts`; the EPUB parser, the reader and the WebView
+   host must not be reachable. Take shared state from import-free modules
+   (`prefetchState.ts` is the example).
+2. **pdfium is leased.** `storage/pdfiumLease.ts` — one document at a time,
+   never torn down mid-load. Any new code that mounts `react-native-pdf` takes
+   the lease.

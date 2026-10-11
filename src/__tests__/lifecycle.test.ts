@@ -228,12 +228,24 @@ test('forget() on an unknown file changes nothing', () => {
 test('committing a removal forgets the file everywhere, not just its parsed copy', () => {
   const pending = source('store/pendingRemoval.ts')
 
+  /*
+   * Both paths now finish through one helper (AUDIT4 C2), which deletes the
+   * bytes and clears the caches only once the index write is confirmed. So the
+   * property is pinned where it lives — in `settleAwaiting` — and both callers
+   * are pinned to reach it, rather than each spelling the call itself.
+   */
+  const settle = pending.slice(pending.indexOf('function settleAwaiting'), pending.indexOf('function finishRemovals'))
   assert.ok(
-    pending.includes('forgetFileEverywhere(fileId)'),
+    settle.includes('forgetFileEverywhere(id)'),
     'commit must clear every id-keyed cache; forgetPrepared alone leaked three MMKV keys per deleted file, permanently',
   )
+
+  const commit = pending.slice(pending.indexOf('commitMany: (fileIds) =>'), pending.lastIndexOf('commitAll: () =>'))
+  assert.ok(commit.includes('finishRemovals('), 'a live commit must finish through the shared path')
+
+  const resume = pending.slice(pending.indexOf('resumeInterrupted: () =>'))
   assert.ok(
-    pending.includes('forgetFileEverywhere(id)'),
+    resume.includes('finishRemovals(entries)'),
     'resumeInterrupted must do the same for removals finished after a process kill',
   )
 })

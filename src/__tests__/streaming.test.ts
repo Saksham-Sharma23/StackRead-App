@@ -30,7 +30,7 @@ const THEME = {
 
 function viewerScript(): string {
   const html = buildViewerHtml(THEME, 0)
-  const match = html.match(/<script>([\s\S]*?)<\/script>/)
+  const match = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)
   assert.ok(match, 'viewer HTML contains no script block')
   return match[1]
 }

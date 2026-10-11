@@ -6,7 +6,6 @@ import {
   parkArchive,
   readParked,
   releaseParked,
-  zipRead,
   type ZipEntryInfo,
 } from './zipWorklet'
 import { PERF, now, type PrepareTrace } from '../../ui/perf'
@@ -122,94 +121,6 @@ export function canOffload(): boolean {
 }
 
 /**
- * Unzips an archive off the JS thread.
- *
- * Falls back to a synchronous unzip when no worklet runtime is available, so
- * the caller never has to branch. The fallback is the previous behaviour
- * exactly.
- *
- * Note the return type: a worklet boundary serialises its result, so the
- * `Record<string, Uint8Array>` that comes back is a copy rather than the same
- * object. That is fine here — the caller consumes it immediately and never
- * holds a reference across the boundary.
- */
-export async function unzipOffThread(
-  bytes: Uint8Array,
-  lane: OffloadLane = 'user',
-  /**
-   * Optional timing sink. See `beginPrepare` in `ui/perf`.
-   *
-   * Passed in rather than kept module-level because the two lanes run
-   * concurrently by design — a prefetch warming a neighbour while the user
-   * opens a file — so a shared accumulator would attribute one lane's time to
-   * the other.
-   */
-  trace?: PrepareTrace,
-): Promise<Record<string, Uint8Array>> {
-  if (!canOffload()) {
-    const t0 = now()
-    const files = unzipSync(bytes)
-    trace?.unzip(now() - t0)
-    return files
-  }
-
-  try {
-    /*
-     * Two paths, and the split is deliberate rather than tidy.
-     *
-     * The instrumented one returns a wrapper object from the worklet, which is
-     * an extra property crossing the boundary — and this module exists to make
-     * that crossing cheaper, not to add to it. So in release, where `PERF`
-     * folds to a constant `false`, this branch is unreachable and the plain
-     * call below is the only one that runs.
-     */
-    if (PERF) {
-      const wall = now()
-      const measured = await runOnRuntimeAsync(getRuntime(lane), (data: Uint8Array) => {
-        'worklet'
-        const t0 = Date.now()
-        const files = zipRead(data, null, false).files
-        // Reported from *inside* the runtime, so the caller can subtract it
-        // from wall time and be left with the crossing cost alone. That
-        // difference is the only direct evidence for AUDIT2 §1.2, which is
-        // otherwise arithmetic over the library's C++.
-        return { files, unzipMs: Date.now() - t0 }
-      }, bytes)
-      const elapsed = now() - wall
-      trace?.unzip(measured.unzipMs)
-      trace?.cross(Math.max(0, elapsed - measured.unzipMs))
-      return measured.files
-    }
-
-    return await runOnRuntimeAsync(getRuntime(lane), (data: Uint8Array) => {
-      'worklet'
-      // `zipRead`, not fflate's `unzipSync`: only a worklet can be called from
-      // a worklet. An archive `zipRead` does not support throws, and the catch
-      // below hands it to fflate on the JS thread.
-      return zipRead(data, null, false).files
-    }, bytes)
-  } catch {
-    /*
-     * Never let an offload failure become a failure to open a file.
-     *
-     * A worklet can fail for reasons that have nothing to do with the document
-     * — a runtime that could not be created, a serialisation limit on a very
-     * large archive. Falling back keeps the file readable and costs only the
-     * jank this module exists to avoid.
-     *
-     * Timed like the other two paths. An untimed fallback would not merely be
-     * missing a number — its unzip would be silently absorbed into `assemble`,
-     * which is computed as the remainder, and a document that quietly took the
-     * fallback would read as one with a slow parser.
-     */
-    const t0 = now()
-    const files = unzipSync(bytes)
-    trace?.unzip(now() - t0)
-    return files
-  }
-}
-
-/**
  * How many archives each runtime keeps resident.
  *
  * Two, not one: the book being read and one more — a neighbour being prefetched
@@ -235,6 +146,12 @@ const MAX_RESIDENT = 2
 export interface ArchiveHandle {
   /** Every entry, from the central directory. Nothing is decompressed for it. */
   readonly entries: ZipEntryInfo[]
+  /**
+   * Bytes this handle keeps alive on the JS side: 0 when the archive is parked
+   * on the worker, the whole file when it fell back to the JS thread. What a
+   * cache holding this handle should charge for it.
+   */
+  readonly jsBytes: number
   /** Decompresses the named entries. Names not in the archive are absent from the result. */
   unzip(names: string[], trace?: PrepareTrace): Promise<Record<string, Uint8Array>>
   /** Lets the worker drop the archive. Later `unzip` calls still work, by reloading. */
@@ -351,6 +268,8 @@ function residentArchive(
 
   return {
     entries,
+    // The archive lives on the worker; a reload is transient and not held.
+    jsBytes: 0,
 
     async unzip(names, trace) {
       if (!names.length) return {}
@@ -418,6 +337,9 @@ function jsArchive(
 
   return {
     entries,
+    get jsBytes() {
+      return bytes ? bytes.length : 0
+    },
     async unzip(names, readTrace) {
       if (!names.length) return {}
       if (!bytes) bytes = await load()

@@ -31,11 +31,63 @@ and a concrete failure scenario.
 |---|---|---|
 | **A1** | **Fixed** | `MAX_PREPARE_BYTES.epub = 100 MB`, enforced by `prepareFile` and by `extractCover` |
 | **A2** | **Fixed** | Archive parked on the worker once; every later pass sends names only. See "A2 — what was done" below |
-| B2 | Fixed as a side effect | `loadRest`/`loadImages` are memoised, which A2's release accounting needs |
+| **A3** | **Fixed** | Phase 1 no longer decompresses images; registration was always size-only |
+| **A4** | **Fixed** | Phase 2 assembles into locals; image bytes not memoised; `retainedBytes` charged; finished books replace their cache entry (`replacePrepared`); drains release items as delivered |
+| **A5** | **Fixed** | Drains gated on `active` and on the viewer holding the current payload |
+| **A6** | **Fixed** | Covers open a handle on the prefetch lane and read container/OPF/cover by name (`coverSelect.ts`); `strFromU8` replaces `TextDecoder` |
+| **A7** | **Fixed** | `useSnippet` reads `SNIPPET_READ_BYTES` through a `FileHandle`; `decodePrefix` handles a cut-off character and non-UTF-8 text |
+| **A8** | **Fixed** | `pdfiumLease.ts` (one document at a time, FIFO, "settled" signal). Factory hoisted to `App.tsx`, drains instead of aborting. `PdfRenderer` mounts `<Pdf>` only once it holds the lease. A closing reader waits up to 2 s for a loading PDF; it takes no touches meanwhile |
+| **A9** | **Fixed** | `onRenderProcessGone` / `onContentProcessDidTerminate` remount the WebView once, re-seeding delivery from the cached document; a second death shows the error view |
+| **A10** | **Fixed** | `ErrorBoundary` at the root (recoverable screen) and around the reader (closes it with an alert). `crashLog.ts` records fatal errors to MMKV before the default handler and logs them on the next launch |
+| **A11** | **Fixed** | Comics and archives list → budget on declared sizes → targeted unzip; new 4 MB total cap on archive text previews; `unzipOffThread` removed |
+| **A12** | **Fixed** | Factory counters at module scope; `thumbbusy:` MMKV marker around every cover attempt, swept into a failure at next launch; pdfium `onError` marks the file failed durably |
+| **B1** | **Fixed** | The anchor-restore path posts `ready`; the test that pinned the bare `return;` now requires `ready` on every exit of `render` |
+| **B2** | **Fixed** (with A4) | `loadRest` memoised and assembled into locals |
+| **B3** | **Fixed** | The image thunk awaits phase 2, then reads the live image map. It exists whenever the manifest has images and chapters remain |
+| **B4** | **Fixed** | Viewer posts `warn` for a failed image or batch; the host logs it in `__DEV__` and never replaces the document |
+| **B5** | **Fixed** | Pager clears the zoom lock in a layout effect keyed on the active file, so a remembered image zoom still applies |
+| **B6** | **Fixed** | Viewer intercepts every `a`/`area` tap in capture phase. In-book links resolve against their chapter and scroll; external ones go to the host, which offers only `http(s)` behind a confirm |
+| **B7** | **Fixed** | `ON CONFLICT(id) DO UPDATE` upsert; `FTS_INDEX_VERSION = '2'` forces one rebuild. Tested on `node:sqlite` with the shipped schema and statement |
+| **B8** | **Fixed** | Own-property format lookup; `x.constructor` and friends fall back and are not importable |
 
-`npm run check`: typecheck clean, **396 tests pass** (377 + 12 in
-`zipWorklet.test.ts` + 7 in `archiveOffload.test.ts`). Not yet verified on a
+| **C1** | **Fixed** | Failed batch retried row by row (bad rows isolated, rest persist); failed state stays queued for the next flush; `lastFullSaveAt` advances only on a complete save; both prune walks skip files newer than it (`pruneGuard.ts`, 10-min grace, nothing pruned before the first full save); one alert per session |
+| **C2** | **Fixed** | `finishRemovals`: drop rows → `flushLibrarySave()` must succeed → then delete bytes and caches. Unconfirmed ids stay in the crash marker; finished on save recovery or next launch |
+| **C3** | **Fixed** | Restore unpacks into `RESTORE_STAGING_DIR` (outside the library). Conflicts with live files of other entries abort before any copy; the same entry's own files are kept; the rest are copied in one by one; staging is always cleared |
+| **C4** | **Fixed** | Export streams each file through a `FileHandle` in 1 MB chunks and awaits every write (real backpressure). It backs up the in-memory library (`snapshotLibrary`) after a flush |
+
+| **D1** | **Fixed** | Native sanitiser rewrites start tags with an HTML-tokenizer-style attribute parser (`/` separators, quoted `>`), so `<svg/onload>`, `<details/open/ontoggle>`, `<img src="x"/onerror>` are stripped and ordinary markup is untouched; viewer `sanitize()` now runs on streamed batches |
+| **D2** | **Fixed** | `validateLibrary.ts`: field-by-field validation of a restored index (safe stored names, nanoid ids, known formats, finite numbers, groups resolve, no duplicates); whole archive rejected on any bad entry; `isSafeStoredName` shared with the archive-entry check |
+| **D3** | **Fixed** | CSP meta in the viewer: `default-src 'none'`, per-document script nonce, images/media from `blob:`/`data:` only. Blocking `INTERNET` in release remains a decision for you (the dev client needs it) |
+| **D4** | **Fixed** | Restore writes each entry chunk by chunk through a `FileHandle` (no entry buffered whole); free-space budget (200 MB reserve) checked up front and per chunk; caps on entry count and index size; archive read in 1 MB chunks; limits reported by name |
+| **D5** | **Fixed** | `viewerMessage.ts` parses every viewer message: finite, clamped numbers; capped strings; oversized or malformed messages dropped |
+| **D6** | **Fixed** | Import/delete logs carry the extension or id, never names; error objects in development only; `scrubPaths` removes URIs and paths from crash records |
+| **D7** | **Fixed** | `copyIntoLibrary` enforces `isKnownExtension` before building a path |
+
+| **E1** | **Fixed / verified** | Inspected the cached AARs: `pdfiumandroid` 1.0.32 ships consumer rules keeping `io.legere.pdfiumandroid.**`, and both the viewer and `modules/pdf-text` call pdfium inside `synchronized(PdfiumCore.lock)`, one process-wide lock. Explicit keep rules (pdfium, Gson attributes, `expo.modules.pdftext`) added in a second marker block so they reach existing `proguard-rules.pro` files |
+| **E2** | **Fixed** | Failure memo moved to import-free `prefetchState.ts`; `startupBundle.test.ts` walks the real static import graph from `index.ts` and fails if the EPUB parser, `fast-xml-parser`, the reader or the WebView host become reachable (mutation-checked against the old import) |
+| **E3** | **Fixed** | `readPrepared` serves only entries ≤ 1 MB synchronously; `readPreparedAsync` serves larger ones after the loading cover paints, before any re-parse |
+| **E4** | **Fixed** | Backgrounding no longer commits pending removals (the MMKV marker already finishes them after a kill), so opening the picker or share sheet keeps the undo; marked ids are hidden from the first frame until `resumeInterrupted` finishes them |
+| **E5** | **Fixed** | The close worklet calls a stable `finishClose` instead of capturing `onClosedRef` |
+
+`npm run check`: typecheck clean, **489 tests pass**. Not yet verified on a
 device.
+
+**Still outside the lease:** `usePdfSearch` drives `modules/pdf-text`, which
+opens its own pdfium document while the reader's is live. That is the E1
+"verify serialisation" item. If on-device testing shows search crashes, the
+lease is the place to fix it.
+
+**Found and fixed while doing A4/A5:**
+
+- *Warm-open truncation race.* `apply()` always built a new payload, so a warm
+  mount rendered its island, began draining into it, and then had the DOM
+  replaced by an identical re-push. Batches drained into the island were lost.
+  Once finished books were cached with their `rest`, this would have truncated
+  every reopened EPUB. `apply()` now skips the re-push when the viewer is
+  showing exactly that cached document (`inlineUntouchedRef`).
+- *`streaming: false` on first EPUB open.* The payload reported streaming only
+  for eager `rest` batches, not a pending `loadRest`. The viewer therefore did
+  not park a saved position past the first paint. It now counts the thunk.
 
 ---
 
@@ -501,10 +553,22 @@ This needs no change to the WebView props.
 SQLite, a REPLACE deletes the conflicting row **without firing DELETE triggers**
 unless `recursive_triggers` is on, which it is not here. The UPDATE trigger does
 not fire either. Every rename, move, reorder and cover capture therefore adds a
-new FTS entry and leaves the old one in place. Renamed files keep matching their
-old name, results can duplicate, and mismatched `'delete'` commands on an
-external-content table can corrupt the index (`SQLITE_CORRUPT_VTAB`), which then
-makes every `applyDiff` throw (see C1).
+new FTS entry and leaves the old one in place.
+
+*Corrected after testing on `node:sqlite`:* a replaced row gets a new rowid, so
+its orphaned entry points at a row that no longer exists, and the search JOIN
+hides it. A renamed file does **not** visibly keep its old name, as this
+originally said. The orphans still surface in two ways, both pinned in
+[readerBugs.test.ts](src/__tests__/readerBugs.test.ts):
+
+- `searchFiles` counts matches on the FTS table without the JOIN, so result
+  totals are inflated by every re-save.
+- When a row is deleted, its rowid can be handed to a new file, which then
+  matches names that belonged to the old one. In the test, a cookbook matches a
+  deleted diary's old title.
+
+The FTS5 `integrity-check` passed in those tests, so the index-corruption risk
+claimed here was not reproduced.
 
 **Fix.** Use `INSERT … ON CONFLICT(id) DO UPDATE SET …` (a true upsert, which
 fires the UPDATE trigger). Then force one FTS `'rebuild'` by bumping the

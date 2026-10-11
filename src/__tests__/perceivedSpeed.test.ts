@@ -35,7 +35,7 @@ const THEME = {
 
 function viewerScript(): string {
   const html = buildViewerHtml(THEME, 0)
-  const match = html.match(/<script>([\s\S]*?)<\/script>/)
+  const match = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)
   assert.ok(match, 'viewer HTML contains no script block')
   return match[1]
 }
@@ -370,33 +370,51 @@ test('the PDF cover factory keeps one document live at a time', () => {
    * crashed inside FPDF_LoadPage when one was unmounted mid-render. A cover
    * factory that mounted several would reintroduce that, on the board.
    */
-  assert.ok(/busy\.current/.test(factory), 'the factory must serialise its captures')
+  /*
+   * Enforced by the pdfium lease now, not a per-component flag (AUDIT4 A8).
+   * The old `busy` ref serialised the factory against itself and knew nothing
+   * of the reader; the lease covers both.
+   */
   assert.ok(
-    /if \(!enabled \|\| busy\.current \|\| target\) return/.test(factory),
-    'no capture may start while one is in flight',
+    /if \(!enabled \|\| requesting\.current \|\| target\) return/.test(factory),
+    'no capture may start while one is requested or in flight',
+  )
+  const start = factory.slice(factory.indexOf("acquirePdfium('cover')"))
+  assert.ok(
+    start.length > 0 && start.indexOf('leaseRef.current = lease') < start.indexOf('setTarget(next)'),
+    'the document may only mount once the lease is held',
   )
   assert.ok(
-    /setTarget\(null\)[\s\S]{0,120}busy\.current = false/.test(factory),
-    'the document must be unmounted before the slot is released',
+    /if \(target \|\| !leaseRef\.current\) return\s*\n\s*leaseRef\.current\.release\(\)/.test(factory),
+    'the lease must be released only after the document has left the tree',
   )
+
+  // The reader takes the same lease, so a capture and an open never overlap.
+  const reader = source('renderers/PdfRenderer.tsx')
+  assert.ok(/acquirePdfium\(`reader:/.test(reader))
+  assert.ok(/\{leased && <AnimatedPdf/.test(reader), 'the reader must not mount pdfium before it holds the lease')
 })
 
 test('the PDF cover factory stands down while the reader is open', () => {
   const factory = source('components/PdfCoverFactory.tsx')
   const screen = source('screens/LibraryScreen.tsx')
 
+  /*
+   * Inverted by AUDIT4 A8. "Mounted on the board" *was* the guard — and it was
+   * the bug: the board unmounts the instant a card is tapped, tearing down a
+   * half-loaded document. The factory lives at the root now and stands down
+   * through `enabled`, draining its capture rather than aborting it.
+   */
   assert.ok(
-    /if \(!enabled && target\)/.test(factory),
-    'an in-flight capture must be abandoned when disabled',
+    /if \(!enabled && target\) abandonRef\.current = true/.test(factory),
+    'disabling must mark the capture to be skipped, not unmount the document',
   )
-  // LibraryScreen unmounts while the reader is open, which is the real guard —
-  // but the explicit prop keeps it from running during an import or a restore.
-  // Matched on the element and its prop separately rather than on one line of
-  // JSX: R6-2 added a third prop and the element is now formatted across lines.
-  const mount = screen.slice(screen.indexOf('<PdfCoverFactory'))
+
+  assert.ok(!screen.includes('<PdfCoverFactory'), 'the board must not mount the factory — its unmount is the hazard')
+  const app = source('../App.tsx')
   assert.ok(
-    mount.startsWith('<PdfCoverFactory') && mount.includes('fileIds={pdfsNeedingCovers}'),
-    'the factory must be mounted on the board, not at the app root',
+    /<PdfCoverFactory[\s\S]{0,200}enabled=\{loaded && !reading && !boardBusy\}/.test(app),
+    'the root must disable the factory while the reader is open or the board is busy',
   )
 })
 
@@ -1095,10 +1113,22 @@ test('deferred phase 2 runs after the viewer is on screen, not during preparatio
     /loadRest: restSpine\.length \? loadRest : undefined/.test(epub),
     'loadEpubAsHtml must return the thunk rather than having run it',
   )
-  assert.doesNotMatch(
-    epub,
-    /await loadRest\(\)/,
-    'phase 2 must not be awaited inside the parser',
+  /*
+   * Scoped to the parse itself. The image thunk now awaits `loadRest` so that
+   * images registered by phase 2's chapters are fetched too (AUDIT4 B3) — but
+   * that thunk also runs only after the first paint, so it does not put phase
+   * 2 back in front of page one. What must never happen is the *parser*
+   * awaiting it.
+   */
+  const parse = epub.slice(epub.indexOf('async function buildBook'), epub.indexOf('let restDone'))
+  assert.ok(parse.length > 0, 'the parse body must be identifiable')
+  assert.doesNotMatch(parse, /await loadRest\(\)/, 'phase 2 must not be awaited inside the parser')
+  const awaits = [...epub.matchAll(/await loadRest\(\)/g)].map((m) => m.index ?? 0)
+  const images = epub.indexOf('const fetchImages')
+  const imagesEnd = epub.indexOf('let imagesInFlight')
+  assert.ok(
+    awaits.every((at) => at > images && at < imagesEnd),
+    'the only await of phase 2 may be inside the deferred image thunk',
   )
   assert.ok(
     /const pending = loadRestRef\.current/.test(renderer),
@@ -1287,24 +1317,31 @@ test('the cover factory stops after a capped number of covers per session', () =
     'the per-session cap must be a named constant with a rationale',
   )
 
-  const pick = factory.slice(factory.indexOf('const pickNext'), factory.indexOf('// Start the queue'))
+  const pick = factory.slice(factory.indexOf('const pickNext'), factory.indexOf('Start the next capture'))
   assert.ok(
-    /if \(made\.current >= MAX_PER_SESSION\) return null/.test(pick),
+    /if \(made >= MAX_PER_SESSION\) return null/.test(pick),
     'the cap must be enforced where the next file is chosen, so nothing is mounted past it',
   )
 
+  /*
+   * Per *session*, which means module scope (AUDIT4 A12). As a `useRef` the
+   * count reset every time the board remounted — every return from the reader.
+   */
+  assert.ok(/^let made = 0$/m.test(factory), 'the session count must live at module scope')
+  assert.ok(/^const tried = new Set<string>\(\)$/m.test(factory), 'the tried set must live at module scope')
+
   // Counted on attempt: a PDF that will not rasterise costs the same pdfium
   // parse as one that will, so counting successes lets broken files run all session.
-  const start = factory.slice(factory.indexOf('busy.current = true'))
+  const start = factory.slice(factory.indexOf("acquirePdfium('cover')"))
   assert.ok(
-    start.indexOf('made.current += 1') < start.indexOf('setTarget(next)'),
+    start.indexOf('made += 1') < start.indexOf('setTarget(next)'),
     'the attempt must be counted before the capture is started, not after it succeeds',
   )
 })
 
 test('the cover factory prefers files in groups that are on screen', () => {
   const factory = source('components/PdfCoverFactory.tsx')
-  const pick = factory.slice(factory.indexOf('const pickNext'), factory.indexOf('// Start the queue'))
+  const pick = factory.slice(factory.indexOf('const pickNext'), factory.indexOf('Start the next capture'))
 
   assert.ok(
     pick.includes('visibleGroups()'),
@@ -1323,16 +1360,26 @@ test('the cover factory prefers files in groups that are on screen', () => {
   const screen = source('screens/LibraryScreen.tsx')
 
   /*
-   * A ref, not state. This is written on every scroll settle, and re-rendering
+   * Not React state. This is written on every scroll settle, and re-rendering
    * the board to tell the factory where the viewport is would cost more than
    * the prioritisation saves.
+   *
+   * It was a ref in this screen; with the factory at the app root (AUDIT4 A8)
+   * it is a plain module variable in `store/boardActivity`, published from the
+   * viewability callback. The property pinned is the same: no state, no store
+   * subscription, no re-render.
    */
+  const activity = source('store/boardActivity.ts')
   assert.ok(
-    /const visibleGroups = useRef<ReadonlySet<string>>/.test(screen),
-    'the visible set must be a ref — as state it re-renders the whole board per scroll settle',
+    /export function setVisibleGroups\([^)]*\): void \{\s*visibleGroups = ids/.test(activity),
+    'the visible set must be a plain variable write — as state it re-renders per scroll settle',
   )
   assert.ok(
-    !/setVisibleGroups/.test(screen),
+    screen.slice(screen.indexOf('const onViewableItemsChanged')).includes('setVisibleGroups(ids)'),
+    'the board must publish the visible set from the viewability callback',
+  )
+  assert.ok(
+    !/useState<ReadonlySet<string>>/.test(screen),
     'the visible set must never be React state',
   )
 

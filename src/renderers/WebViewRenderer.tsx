@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { StyleSheet, Text, View } from 'react-native'
+import { Alert, Linking, StyleSheet, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
@@ -16,12 +16,13 @@ import { prepareFile, type Prepared, type PreparedImage } from './webview/prepar
 import { strToU8 } from 'fflate'
 
 import { toBase64OffThread } from './webview/offload'
-import { getPrepared, setPrepared } from './webview/prepareCache'
-import { readPrepared, writePrepared } from './webview/diskCache'
+import { getPrepared, replacePrepared, setPrepared } from './webview/prepareCache'
+import { readPrepared, readPreparedAsync, writePrepared } from './webview/diskCache'
 import { LIBRARY_DIR } from '../storage/paths'
 import { File } from 'expo-file-system'
 import { PERF, now, perf } from '../ui/perf'
 import type { RendererProps } from './types'
+import { parseViewerMessage } from './webview/viewerMessage'
 
 /**
  * Host for every format the desktop app rendered as HTML: EPUB, HTML, Markdown
@@ -129,6 +130,41 @@ function readCached(fileId: string, storedName: string): Prepared | undefined {
  * a native view, where a changed prop is a real update rather than a cheap
  * comparison. The security posture is unchanged; only the identity is.
  */
+/**
+ * How many times a dead WebView renderer is replaced before giving up.
+ *
+ * One. The renderer process is killed mostly under memory pressure, and one
+ * fresh start usually succeeds. A second death in the same renderer means the
+ * document itself is what exhausts it, and restarting again would loop.
+ */
+const MAX_RENDERER_RESTARTS = 1
+
+/**
+ * Offers an external link from a document to the user — never opens it unasked.
+ *
+ * The viewer intercepts every link tap ([AUDIT4 B6](../../AUDIT4.md)). Before
+ * that, an external link failed the WebView's origin whitelist and
+ * `react-native-webview` passed it straight to the OS, so a document could
+ * launch the browser, the dialler or the store with a URL of its choosing.
+ *
+ * Only `http(s)` is offered. A document has no legitimate reason to start a
+ * call or an app install, and `intent:`-style schemes are exactly what a
+ * hostile file would use. The URL is shown before anything opens, truncated so
+ * a long one cannot push the buttons off screen.
+ */
+function offerExternalLink(href: string): void {
+  const url = href.trim().slice(0, 2048)
+  if (!/^https?:\/\//i.test(url)) {
+    Alert.alert('Link not opened', 'StackRead only opens web links from documents.')
+    return
+  }
+  const shown = url.length > 200 ? `${url.slice(0, 200)}…` : url
+  Alert.alert('Open this link in your browser?', shown, [
+    { text: 'Cancel', style: 'cancel' },
+    { text: 'Open', onPress: () => void Linking.openURL(url).catch(() => {}) },
+  ])
+}
+
 function allowOnlyBundledContent(req: { url: string }): boolean {
   return req.url === 'about:blank' || req.url.startsWith('data:')
 }
@@ -384,6 +420,41 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
     }
   }
 
+  /**
+   * The cached document this renderer's content came from, by identity.
+   *
+   * Held so that when phase 2 finishes, the cache entry can be replaced with the
+   * whole book (`replacePrepared`) — but only if it is still this exact object.
+   * Updated in `apply()` alongside the delivery refs.
+   */
+  const sourceRef = useRef<Prepared | undefined>(warmRef.current.hit)
+
+  /**
+   * Whether the viewer has rendered the payload most recently applied.
+   *
+   * `rendered` cannot answer this on its own. When a neighbour becomes active,
+   * `apply()` re-seeds the delivery refs and pushes a fresh payload in the same
+   * effect flush in which the drain effects below re-run — with `rendered`
+   * still true from the old document. Draining then would inject batches the
+   * incoming payload is about to replace, and the drain refs are cleared up
+   * front, so the book would come back truncated. A ref is updated
+   * synchronously by `apply()`, which runs first; state is not.
+   */
+  const viewerCurrentRef = useRef(false)
+
+  /**
+   * True while the viewer holds exactly the inlined island and nothing has been
+   * drained into it or pushed over it.
+   *
+   * `apply()` uses it to avoid re-pushing the same cached document. It always
+   * built a new payload object, so a warm mount rendered its island, began
+   * draining batches into it, and then had the whole DOM replaced by the
+   * identical re-push — losing the batches, since the drain refs are cleared
+   * when draining starts. With finished EPUBs now cached with their `rest`
+   * (`replacePrepared`), that would have truncated every reopened book.
+   */
+  const inlineUntouchedRef = useRef(inlinedPayload !== null)
+
   /*
    * Preparation lives in `webview/prepare`, so every format converges on one
    * code path and adding a format never touches this component.
@@ -410,6 +481,7 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
       imagesRef.current = prepared.images ?? []
       loadRestRef.current = prepared.loadRest ?? null
       loadImagesRef.current = prepared.loadImages ?? null
+      sourceRef.current = prepared
       /*
        * Counts captured here, not read at report time.
        *
@@ -420,6 +492,19 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
       viewerTrace.current.batches = restRef.current.length
       viewerTrace.current.images = imagesRef.current.length
       viewerTrace.current.pushedAt = now()
+
+      // The viewer already has this exact document as its island and nothing
+      // has touched it: the refs above are all it needs. No re-push, so the
+      // drains run against the DOM that will stay.
+      if (inlineUntouchedRef.current && prepared === warmRef.current.hit) {
+        setToc(file.id, prepared.toc ?? [])
+        return
+      }
+      inlineUntouchedRef.current = false
+
+      // A new payload is about to replace whatever the viewer shows; nothing
+      // may be drained into it until the viewer says `ready` for this one.
+      viewerCurrentRef.current = false
       /*
        * Clear any error the viewer reported before this content arrived.
        *
@@ -439,7 +524,13 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
         scroll: initialScroll,
         anchor: initialAnchor,
         settings: settingsRef.current,
-        streaming: restRef.current.length > 0,
+        /*
+         * A pending `loadRest` counts. An EPUB's first open carries its rest as
+         * a thunk, not as batches, and reporting `streaming: false` for it made
+         * the viewer treat a saved position past the first paint as
+         * unreachable instead of parking it until the chapters arrive.
+         */
+        streaming: restRef.current.length > 0 || loadRestRef.current !== null,
       })
       setToc(file.id, prepared.toc ?? [])
     }
@@ -460,6 +551,19 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
 
     void (async () => {
       try {
+        /*
+         * A disk entry too large to read during the first render
+         * (`SYNC_READ_MAX_BYTES`) is still worth reading — it saves a full
+         * re-parse — just not synchronously ([AUDIT4 E3](../../AUDIT4.md)).
+         * The loading cover is up while it reads.
+         */
+        const fromDisk = await readPreparedAsync(file.id, new File(LIBRARY_DIR, file.storedName))
+        if (fromDisk) {
+          setPrepared(file.id, fromDisk)
+          if (!cancelled) apply(fromDisk)
+          return
+        }
+
         const prepared = await prepareFile(file)
         /*
          * Cached *before* the cancellation check, on purpose.
@@ -520,11 +624,29 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
    * and posting into a dead WebView throws.
    */
   useEffect(() => {
-    if (!rendered) return
+    /*
+     * Only the active renderer drains ([AUDIT4 A5](../../AUDIT4.md)).
+     *
+     * A warm neighbour renders its island and reports `ready` like any other
+     * renderer, and this used to assemble the rest of its book and stream every
+     * image into it while nobody was looking — three books at once, the exact
+     * failure mounting neighbours was claimed to be safe from. Its refs stay
+     * seeded and drain when it becomes active.
+     *
+     * `viewerCurrentRef` keeps a drain from starting against a document that
+     * `apply()` is about to replace — see its declaration.
+     */
+    if (!rendered || !active || !viewerCurrentRef.current) return
     if (!restRef.current.length && !loadRestRef.current) return
+
+    // From here the viewer's DOM is more than the inlined island.
+    inlineUntouchedRef.current = false
 
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
+
+    // The cache entry this content came from, to be finished once phase 2 is.
+    const source = sourceRef.current
 
     const queue = restRef.current
     // Cleared up front so a re-render cannot start a second drain over the same
@@ -547,12 +669,17 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
     const pending = loadRestRef.current
     loadRestRef.current = null
 
-    let i = 0
+    /*
+     * Each batch leaves `queue` once it has been handed to the viewer.
+     *
+     * Indexing instead kept every batch referenced by this effect's closure
+     * until unmount — the whole book's text held a second time for the life of
+     * the renderer, after the viewer already had it.
+     */
     const pump = async () => {
       if (cancelled || !webRef.current) return
-      const content = queue[i]
-      const last = i === queue.length - 1
-      i += 1
+      const content = queue[0]
+      const last = queue.length === 1
 
       /*
        * `injectJavaScript` with a base64 argument, not `postMessage`.
@@ -589,7 +716,8 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
         // A batch that will not encode must not strand the rest of the book.
       }
 
-      if (!last && !cancelled) timer = setTimeout(() => void pump(), 0)
+      queue.shift()
+      if (queue.length && !cancelled) timer = setTimeout(() => void pump(), 0)
     }
 
     /*
@@ -604,6 +732,32 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
       if (pending) {
         try {
           const done = await pending()
+
+          /*
+           * Finish the cache entry, even if this renderer has since gone.
+           *
+           * The entry held a first paint and a thunk; it becomes the whole
+           * book. A later mount then streams `rest` directly instead of
+           * reaching back into the archive, the budget measures the text the
+           * entry really holds, and a book with no images becomes
+           * disk-cacheable ([AUDIT4 A4](../../AUDIT4.md)). `replacePrepared`
+           * does nothing if the entry was evicted or re-parsed meanwhile.
+           */
+          if (source) {
+            const finished: Prepared = {
+              ...source,
+              rest: [...(source.rest ?? []), ...done.rest],
+              totalPages: done.totalPages > 0 ? done.totalPages : source.totalPages,
+              loadRest: undefined,
+              // Only the image thunk can still be holding the archive.
+              retainedBytes: source.loadImages ? source.retainedBytes : undefined,
+            }
+            if (replacePrepared(file.id, source, finished)) {
+              sourceRef.current = finished
+              writePrepared(file.id, new File(LIBRARY_DIR, file.storedName), finished)
+            }
+          }
+
           if (cancelled) return
           queue.push(...done.rest)
 
@@ -637,7 +791,8 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
       cancelled = true
       if (timer) clearTimeout(timer)
     }
-  }, [rendered])
+    // `file` is fixed for the life of a renderer; listed for the cache writes.
+  }, [rendered, active, file.id, file.storedName])
 
   /*
    * Deliver images after the document is on screen.
@@ -657,8 +812,11 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
    *    memory spike this whole change exists to remove.
    */
   useEffect(() => {
-    if (!rendered) return
+    // Active only, and only against the current payload: see the text drain.
+    if (!rendered || !active || !viewerCurrentRef.current) return
     if (!imagesRef.current.length && !loadImagesRef.current) return
+
+    inlineUntouchedRef.current = false
 
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
@@ -678,12 +836,15 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
     const fetchImages = loadImagesRef.current
     loadImagesRef.current = null
 
-    let i = 0
+    /*
+     * Each image leaves `queue` once posted, so its bytes can be collected.
+     * Indexing kept every decoded image alive in this closure until unmount —
+     * up to the whole image budget, held after the viewer had its own copy.
+     */
     const pump = async () => {
       if (cancelled || !webRef.current) return
 
-      const image = queue[i]
-      i += 1
+      const image = queue[0]
 
       try {
         const data = await toBase64OffThread(image.bytes)
@@ -696,7 +857,8 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
         // for; its element simply stays empty.
       }
 
-      if (i < queue.length && !cancelled) timer = setTimeout(() => void pump(), 0)
+      queue.shift()
+      if (queue.length && !cancelled) timer = setTimeout(() => void pump(), 0)
     }
 
     const start = async () => {
@@ -720,7 +882,7 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
       cancelled = true
       if (timer) clearTimeout(timer)
     }
-  }, [rendered])
+  }, [rendered, active])
 
   // Typography changes are pushed as a style-only update.
   useEffect(() => {
@@ -813,28 +975,56 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
     )
   }, [file.format])
 
+  /*
+   * The WebView's renderer process died ([AUDIT4 A9](../../AUDIT4.md)).
+   *
+   * Android kills it first under memory pressure, and it can crash on its own.
+   * `react-native-webview` stops that from killing the app, but the WebView
+   * object is dead from then on — Android's contract is that it must be
+   * replaced — and nothing here noticed: the pumps kept calling
+   * `injectJavaScript`/`postMessage` on it and the page stayed blank.
+   *
+   * So: stop everything that talks to it, re-seed delivery from the cached
+   * document, and mount a fresh WebView. It boots the same HTML (island
+   * included), the boot handshake pushes the payload if there was no island,
+   * and the drains re-run on `ready`. A second death shows the error view.
+   */
+  const [webKey, setWebKey] = useState(0)
+  const rendererDeaths = useRef(0)
+
+  const handleRenderProcessGone = useCallback(() => {
+    rendererDeaths.current += 1
+
+    viewerCurrentRef.current = false
+    setBooted(false)
+    setRendered(false)
+
+    if (rendererDeaths.current > MAX_RENDERER_RESTARTS) {
+      setError('The page renderer stopped working while showing this file.')
+      return
+    }
+
+    const source = sourceRef.current
+    if (source) {
+      restRef.current = source.rest ?? []
+      imagesRef.current = source.images ?? []
+      loadRestRef.current = source.loadRest ?? null
+      loadImagesRef.current = source.loadImages ?? null
+    }
+    // The fresh view starts from the same HTML, island and all.
+    inlineUntouchedRef.current = inlinedPayload !== null
+    setWebKey((k) => k + 1)
+  }, [inlinedPayload])
+
   const handleMessage = useCallback(
     (e: WebViewMessageEvent) => {
-      let msg: {
-        type: string
-        current?: number
-        total?: number
-        label?: string
-        percent?: number
-        scrollY?: number
-        message?: string
-        scale?: number
-        query?: string
-        truncated?: boolean
-        offset?: number
-        ms?: number
-        anchors?: number
-      }
-      try {
-        msg = JSON.parse(e.nativeEvent.data)
-      } catch {
-        return
-      }
+      /*
+       * Normalised before anything reads it ([AUDIT4 D5](../../AUDIT4.md)):
+       * numbers finite and in range, strings capped, oversized messages
+       * dropped. The checks below can then stay simple presence tests.
+       */
+      const msg = parseViewerMessage(e.nativeEvent.data)
+      if (!msg) return
 
       if (msg.type === 'boot') {
         // The script is alive and listening; content can be pushed in.
@@ -844,6 +1034,8 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
         // Content is in the DOM and measured. Only now can a seek or a style
         // update land on something.
         viewerTrace.current.ready = now() - viewerTrace.current.pushedAt
+        // Set before the state update, so the drain effects it triggers see it.
+        viewerCurrentRef.current = true
         setRendered(true)
         // Reported here as well as on `complete`, because a document with
         // nothing deferred never sends `complete` at all — and those are most
@@ -903,6 +1095,13 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
           current: msg.current ?? 0,
           truncated: msg.truncated,
         })
+      } else if (msg.type === 'warn') {
+        // A partial failure — one image, one batch. The document is still on
+        // screen and readable, so this is logged, never shown (AUDIT4 B4).
+        if (__DEV__) console.warn(`[viewer] ${String(msg.message ?? '').slice(0, 300)}`)
+      } else if (msg.type === 'link') {
+        // An external link in the document. Only the file on screen may ask.
+        if (activeRef.current && typeof msg.href === 'string') offerExternalLink(msg.href)
       } else if (msg.type === 'error') {
         setError(msg.message ?? 'Could not display this file')
       }
@@ -922,10 +1121,14 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
   return (
     <Animated.View style={[styles.fill, { backgroundColor: theme.bg }, insetStyle]}>
       <WebView
+        key={webKey}
         ref={webRef}
         source={{ html }}
         originWhitelist={['about:blank']}
         onMessage={handleMessage}
+        onRenderProcessGone={handleRenderProcessGone}
+        // iOS equivalent: WKWebView's content process terminated.
+        onContentProcessDidTerminate={handleRenderProcessGone}
         // The viewer is self-contained: no navigation, no network, no file access.
         // This is the analogue of the desktop app's `will-navigate` guard.
         onShouldStartLoadWithRequest={allowOnlyBundledContent}

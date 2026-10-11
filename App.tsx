@@ -1,4 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native'
 import { StatusBar } from 'expo-status-bar'
 import * as SplashScreen from 'expo-splash-screen'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
@@ -13,6 +14,31 @@ import { useLibrary } from './src/store/library'
 import { useTheme } from './src/ui/theme'
 import { useAppLifecycle } from './src/ui/useAppLifecycle'
 import { perf, reportStartup } from './src/ui/perf'
+import { installCrashLog } from './src/ui/crashLog'
+import { ErrorBoundary } from './src/components/ErrorBoundary'
+import { PdfCoverFactory } from './src/components/PdfCoverFactory'
+import { usePdfsNeedingCovers } from './src/store/selectors'
+import { getVisibleGroups, useBoardActivity } from './src/store/boardActivity'
+import { whenPdfiumSettled } from './src/storage/pdfiumLease'
+
+/*
+ * Record fatal JS errors before React Native's default handler ends the
+ * process, and report the previous session's on this launch
+ * ([AUDIT4 A10](AUDIT4.md)). Module scope, so it is in place before the first
+ * render can throw.
+ */
+installCrashLog()
+
+/**
+ * How long a closing reader is kept mounted, invisibly, while a PDF finishes
+ * loading.
+ *
+ * Tearing pdfium down mid-load is the crash class DETAIL.md §8 records. The
+ * reader has already faded out by the time this applies, so the wait is
+ * invisible except as a slightly later board. A backstop, not a target: a PDF
+ * that never reports back must not leave the reader unclosable.
+ */
+const PDF_CLOSE_GRACE_MS = 2000
 
 /**
  * The reader, loaded on first open rather than at startup.
@@ -166,8 +192,28 @@ function Root() {
   const handleClose = useCallback(() => setClosing(true), [])
 
   const handleClosed = useCallback(() => {
-    setReading(null)
-    setClosing(false)
+    /*
+     * Not until any PDF in the reader has finished loading ([AUDIT4 A8](AUDIT4.md)).
+     * Resolves at once for every other format, and for a PDF already open.
+     */
+    void whenPdfiumSettled(PDF_CLOSE_GRACE_MS).then(() => {
+      setReading(null)
+      setClosing(false)
+    })
+  }, [])
+
+  /*
+   * The reader threw while rendering. Close it, and say so.
+   *
+   * Without a boundary this took the whole app down. A file that cannot be
+   * displayed should cost its own open, not the session ([AUDIT4 A10](AUDIT4.md)).
+   */
+  const handleReaderCrash = useCallback(() => {
+    setClosing(true)
+    Alert.alert(
+      'Couldn’t display this file',
+      'The reader ran into a problem and was closed. Your library is unaffected.',
+    )
   }, [])
 
   return (
@@ -223,14 +269,67 @@ function Root() {
             second loading affordance during a designed transition is worse than
             none.
           */}
-          <Suspense fallback={null}>
-            <ReaderScreen key={reading.id} initialFile={reading} onClose={handleClose} />
-          </Suspense>
+          <ErrorBoundary
+            name="reader"
+            onError={handleReaderCrash}
+            // Plain page colour while the transition folds it away.
+            fallback={() => <View style={[styles.fill, { backgroundColor: theme.bg }]} />}
+          >
+            <Suspense fallback={null}>
+              <ReaderScreen key={reading.id} initialFile={reading} onClose={handleClose} />
+            </Suspense>
+          </ErrorBoundary>
         </ReaderTransition>
       ) : (
         <LibraryScreen onOpenFile={handleOpenFile} />
       )}
+
+      <CoverFactoryHost reading={reading !== null} />
     </>
+  )
+}
+
+/**
+ * The PDF cover factory, at the root ([AUDIT4 A8](AUDIT4.md)).
+ *
+ * It lived inside `LibraryScreen`, which is unmounted the instant a card is
+ * tapped — tearing down whatever pdfium document it had half-loaded. Here it is
+ * never unmounted by navigation; opening the reader only disables it, and it
+ * drains its current capture instead of aborting it.
+ *
+ * Its own component so its subscriptions — covers landing, the board going busy
+ * — re-render it alone, not `Root` and everything under it.
+ */
+function CoverFactoryHost({ reading }: { reading: boolean }) {
+  const loaded = useLibrary((s) => s.loaded)
+  const boardBusy = useBoardActivity((s) => s.busy)
+  const fileIds = usePdfsNeedingCovers()
+
+  return (
+    <PdfCoverFactory
+      fileIds={fileIds}
+      enabled={loaded && !reading && !boardBusy}
+      visibleGroups={getVisibleGroups}
+    />
+  )
+}
+
+/**
+ * Shown when something outside the reader fails to render.
+ *
+ * Deliberately plain: it must not depend on the theme, the store or anything
+ * else that might be what failed. "Try again" re-renders the tree from scratch,
+ * which recovers from anything transient; the error itself is already logged.
+ */
+function RootFallback({ reset }: { reset: () => void }) {
+  return (
+    <View style={styles.crash}>
+      <Text style={styles.crashTitle}>Something went wrong</Text>
+      <Text style={styles.crashBody}>StackRead hit an unexpected error. Your library is safe.</Text>
+      <Pressable onPress={reset} style={styles.crashButton} accessibilityRole="button">
+        <Text style={styles.crashButtonText}>Try again</Text>
+      </Pressable>
+    </View>
   )
 }
 
@@ -246,8 +345,38 @@ export default function App() {
       */}
       <ReducedMotionConfig mode={ReduceMotion.System} />
       <SafeAreaProvider>
-        <Root />
+        {/*
+          The last line of defence: a render error anywhere outside the reader
+          (which has its own boundary) shows a recoverable screen instead of
+          exiting the app ([AUDIT4 A10](AUDIT4.md)).
+        */}
+        <ErrorBoundary name="root" fallback={(_, reset) => <RootFallback reset={reset} />}>
+          <Root />
+        </ErrorBoundary>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   )
 }
+
+const styles = StyleSheet.create({
+  fill: { flex: 1 },
+  // The splash navy: the one colour guaranteed to match whatever was on screen.
+  crash: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 32,
+    gap: 12,
+    backgroundColor: '#0e1a3b',
+  },
+  crashTitle: { color: '#ffffff', fontSize: 18, fontWeight: '600' },
+  crashBody: { color: '#c8cde0', fontSize: 14, textAlign: 'center', lineHeight: 20 },
+  crashButton: {
+    marginTop: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: '#2f4a8a',
+  },
+  crashButtonText: { color: '#ffffff', fontSize: 15, fontWeight: '600' },
+})

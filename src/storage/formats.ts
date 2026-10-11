@@ -153,8 +153,22 @@ export function extensionOf(filename: string): string {
   return filename.slice(dot + 1).toLowerCase()
 }
 
+/**
+ * The spec for an extension, or undefined — own properties only.
+ *
+ * `FORMATS` is a plain object, so `FORMATS['constructor']` is `Object` and
+ * `'constructor' in FORMATS` is true. A picked file named `notes.constructor`
+ * (or `.toString`, `.__proto__`) used to pass `isKnownExtension` and be
+ * imported with `format: undefined`, which binds into a NOT NULL column and
+ * makes every later save fail ([AUDIT4 B8](../../AUDIT4.md)). Every lookup goes
+ * through here so there is one place that gets this right.
+ */
+function lookup(ext: string): FormatSpec | undefined {
+  return Object.prototype.hasOwnProperty.call(FORMATS, ext) ? FORMATS[ext] : undefined
+}
+
 export function specOf(filename: string): FormatSpec {
-  return FORMATS[extensionOf(filename)] ?? FALLBACK
+  return lookup(extensionOf(filename)) ?? FALLBACK
 }
 
 export function formatOf(filename: string): FileFormat {
@@ -162,7 +176,7 @@ export function formatOf(filename: string): FileFormat {
 }
 
 export function isKnownExtension(filename: string): boolean {
-  return extensionOf(filename) in FORMATS
+  return lookup(extensionOf(filename)) !== undefined
 }
 
 /** Whether a renderer exists for this file yet. */

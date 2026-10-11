@@ -106,36 +106,81 @@ function stampOf(source: File): { size: number; mtime: number } | null {
 }
 
 /**
- * Reads a previously prepared document, if one matches these exact bytes.
+ * Entries up to this size are read synchronously; larger ones only through
+ * `readPreparedAsync` ([AUDIT4 E3](../../../AUDIT4.md)).
+ *
+ * The synchronous read sits inside the renderer's first render, so its cost is
+ * the first frame's: a 12MB entry is a `textSync` plus a `JSON.parse` of 12MB on
+ * the JS thread before anything paints, which is a dropped frame at best. A
+ * typical document is far under this and keeps the instant, spinner-free open
+ * the synchronous path exists for.
+ */
+export const SYNC_READ_MAX_BYTES = 1_000_000
+
+/** The cache file for this document's exact bytes, if one exists. */
+function entryFile(fileId: string, source: File): File | null {
+  const stamp = stampOf(source)
+  if (!stamp) return null
+  const file = new File(CACHE_DIR, entryName(fileId, stamp.size, stamp.mtime))
+  return file.exists ? file : null
+}
+
+/**
+ * Validates a parsed envelope: null for anything that is not a current entry.
+ *
+ * Image-carrying documents are refused even though `writePrepared` never
+ * writes them — an entry left by an older build must not be trusted to have
+ * followed today's rules.
+ */
+function fromEnvelope(parsed: unknown): Prepared | null {
+  if (typeof parsed !== 'object' || parsed === null) return null
+  const envelope = parsed as Partial<Envelope>
+  if (envelope.v !== FORMAT_VERSION || !envelope.prepared) return null
+  const prepared = envelope.prepared
+  if (prepared.images && prepared.images.length) return null
+  if (typeof prepared.content !== 'string') return null
+  return prepared
+}
+
+/**
+ * Reads a previously prepared document, if one matches these exact bytes and
+ * is small enough to read without stalling a frame.
  *
  * Synchronous, because it sits on the path that decides whether to show a
  * loading state at all — the memory cache is read synchronously for the same
  * reason, and going async here would reintroduce the one-frame spinner flash
- * that the pinned window exists to remove.
+ * that the pinned window exists to remove. An entry above
+ * `SYNC_READ_MAX_BYTES` reads as a miss here; `readPreparedAsync` serves it.
+ *
+ * Any failure — a corrupt or truncated entry, a stale format — is a miss, not
+ * an error: the caller re-parses, which is the correct fallback.
  */
 export function readPrepared(fileId: string, source: File): Prepared | null {
-  const stamp = stampOf(source)
-  if (!stamp) return null
-
   try {
-    const file = new File(CACHE_DIR, entryName(fileId, stamp.size, stamp.mtime))
-    if (!file.exists) return null
-
-    const parsed: unknown = JSON.parse(file.textSync())
-    if (typeof parsed !== 'object' || parsed === null) return null
-
-    const envelope = parsed as Partial<Envelope>
-    if (envelope.v !== FORMAT_VERSION || !envelope.prepared) return null
-
-    const prepared = envelope.prepared
-    // A cached entry never carries images (see the module docstring), so one
-    // that appears to is from a build that wrote them and must be ignored.
-    if (prepared.images && prepared.images.length) return null
-    if (typeof prepared.content !== 'string') return null
-
-    return prepared
+    const file = entryFile(fileId, source)
+    if (!file) return null
+    if ((file.size ?? 0) > SYNC_READ_MAX_BYTES) return null
+    return fromEnvelope(JSON.parse(file.textSync()))
   } catch {
-    // Unreadable or malformed: parse it again.
+    return null
+  }
+}
+
+/**
+ * Reads a prepared document of any size without blocking on the file read.
+ *
+ * For the entries `readPrepared` declines: a large document still opens from
+ * the disk cache rather than being re-parsed — it shows the loading cover for
+ * the read instead of freezing the first frame. The `JSON.parse` itself is
+ * still synchronous (there is no streaming parser), but it now runs after the
+ * cover has painted.
+ */
+export async function readPreparedAsync(fileId: string, source: File): Promise<Prepared | null> {
+  try {
+    const file = entryFile(fileId, source)
+    if (!file) return null
+    return fromEnvelope(JSON.parse(await file.text()))
+  } catch {
     return null
   }
 }

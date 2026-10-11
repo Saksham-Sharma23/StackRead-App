@@ -1,11 +1,12 @@
 import { InteractionManager } from 'react-native'
 import * as DocumentPicker from 'expo-document-picker'
-import { File } from 'expo-file-system'
+import { Directory, File } from 'expo-file-system'
 import { nanoid } from 'nanoid/non-secure'
 
 import type { FileEntry } from '../types'
 import { extensionOf, formatOf, isKnownExtension } from './formats'
-import { storage, LAST_PRUNE_KEY } from './mmkv'
+import { storage, LAST_FULL_SAVE_KEY, LAST_PRUNE_KEY } from './mmkv'
+import { isOldEnoughToPrune } from './pruneGuard'
 import { LIBRARY_DIR, ensureLibraryDir, storedFile, thumbFile } from './paths'
 
 /**
@@ -60,7 +61,17 @@ export async function importFiles(groupId: string, startOrder: number): Promise<
       entries.push(copyIntoLibrary(asset.uri, asset.name, groupId, order))
       order += 1
     } catch (err) {
-      console.warn(`[stackread] failed to import ${asset.name}`, err)
+      /*
+       * The extension, never the name ([AUDIT4 D6](../../AUDIT4.md)). Document
+       * titles are personal, logcat is readable over a cable, and crash
+       * reporting will upload whatever lands here. The error object stays
+       * development-only too: a file-system error carries the cached copy's
+       * path, and that copy keeps the original filename.
+       */
+      console.warn(
+        `[stackread] failed to import a .${extensionOf(asset.name) || '?'} file`,
+        __DEV__ ? err : undefined,
+      )
       skipped.push(asset.name)
     }
   }
@@ -79,6 +90,20 @@ export function copyIntoLibrary(
   orderInGroup: number,
 ): FileEntry {
   ensureLibraryDir()
+
+  /*
+   * Enforced here, not assumed from the caller ([AUDIT4 D7](../../AUDIT4.md)).
+   *
+   * This function builds a filesystem path out of `ext` — `extensionOf` returns
+   * everything after the last dot, unvalidated, so `x.../../evil` would carry
+   * separators into it. `importFiles` happens to filter on `isKnownExtension`
+   * first, but this is exported, and a precondition kept in the caller is the
+   * shape of bug DETAIL.md §6.3 records. A known extension is a short
+   * alphanumeric key of `FORMATS`, which can never escape the directory.
+   */
+  if (!isKnownExtension(originalName)) {
+    throw new Error(`unsupported extension: .${extensionOf(originalName).slice(0, 16)}`)
+  }
 
   const id = nanoid(12)
   const ext = extensionOf(originalName)
@@ -180,7 +205,8 @@ export function deleteFromLibrary(entry: FileEntry): void {
     const f = new File(LIBRARY_DIR, entry.storedName)
     if (f.exists) f.delete()
   } catch (err) {
-    console.warn(`[stackread] failed to delete ${entry.storedName}`, err)
+    // The id, never a name; the error (which carries a path) in development only.
+    console.warn(`[stackread] failed to delete file ${entry.id}`, __DEV__ ? err : undefined)
   }
 
   try {
@@ -272,11 +298,13 @@ export function pruneOrphans(entries: FileEntry[]): number {
     if (e.thumb) keep.add(e.thumb)
   }
 
+  const lastFullSave = storage.getNumber(LAST_FULL_SAVE_KEY) ?? 0
   let removed = 0
   for (const item of LIBRARY_DIR.list()) {
     const name = item.name
     if (name.startsWith('library.json')) continue
     if (keep.has(name)) continue
+    if (!mayDelete(item, lastFullSave)) continue
     try {
       item.delete()
       removed += 1
@@ -285,6 +313,25 @@ export function pruneOrphans(entries: FileEntry[]): number {
     }
   }
   return removed
+}
+
+/**
+ * The age guard on deletion ([AUDIT4 C1](../../AUDIT4.md)).
+ *
+ * An unreferenced file is deleted only if it is older than the last save that
+ * left the index matching memory — otherwise it may belong to an entry a
+ * failed save never recorded, and deleting it loses the user's file. Anything
+ * that is not a plain file, or whose timestamp cannot be read, is kept.
+ */
+function mayDelete(item: File | Directory, lastFullSave: number): boolean {
+  if (!(item instanceof File)) return false
+  let modified: number | null = null
+  try {
+    modified = item.lastModified ?? item.modificationTime ?? null
+  } catch {
+    modified = null
+  }
+  return isOldEnoughToPrune(modified, lastFullSave)
 }
 
 /**
@@ -345,6 +392,10 @@ async function pruneOrphansChunked(liveEntries: () => FileEntry[]): Promise<numb
   if (!entries.length) return 0
   let keep = keepFrom(entries)
 
+  // Read once: a save landing mid-walk only makes more files deletable, and
+  // missing that costs an orphan one more day.
+  const lastFullSave = storage.getNumber(LAST_FULL_SAVE_KEY) ?? 0
+
   let removed = 0
   let sliceStart = Date.now()
 
@@ -361,6 +412,7 @@ async function pruneOrphansChunked(liveEntries: () => FileEntry[]): Promise<numb
     const name = item.name
     if (name.startsWith('library.json')) continue
     if (keep.has(name)) continue
+    if (!mayDelete(item, lastFullSave)) continue
     try {
       item.delete()
       removed += 1

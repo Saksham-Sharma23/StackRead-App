@@ -9,6 +9,7 @@ import {
   prepareCacheStats,
   hasPrepared,
   setPinned,
+  replacePrepared,
 } from '../renderers/webview/prepareCache.ts'
 import type { Prepared } from '../renderers/webview/prepare.ts'
 
@@ -521,4 +522,60 @@ test('fetched image bytes are still charged', () => {
     prepareCacheStats().bytes >= 100_000,
     'image bytes that are actually held must be counted',
   )
+})
+
+
+/* ==================== AUDIT4 A4: what closures hold ==================== */
+
+test('bytes a document retains through its thunks are charged to it', () => {
+  /*
+   * An EPUB whose archive stayed on the JS side keeps the whole file alive
+   * through `loadRest` / `loadImages`. Measured on its first-paint markup alone
+   * it looked like a few hundred kilobytes, and six of them fit the tail.
+   */
+  const light = doc(100_000)
+  const heavy: Prepared = { ...doc(100_000), retainedBytes: 5_000_000 }
+
+  setPrepared('light', light)
+  const before = prepareCacheStats().bytes
+  setPrepared('heavy', heavy)
+
+  assert.equal(prepareCacheStats().bytes - before, 100_000 + 5_000_000)
+})
+
+test('retained bytes count against the tail budget like any other', () => {
+  // Five documents of trivial markup, each holding 6MB through a closure, must
+  // not all fit a 24MB tail.
+  for (let i = 0; i < 5; i++) {
+    setPrepared(`book-${i}`, { ...doc(1_000), retainedBytes: 6_000_000 })
+  }
+  assert.ok(prepareCacheStats().tailBytes <= 24_000_000)
+  assert.ok(prepareCacheStats().entries < 5, 'the budget must evict on retained bytes')
+})
+
+test('replacePrepared swaps in the finished document and re-measures it', () => {
+  const firstPaint: Prepared = { ...doc(10_000), retainedBytes: 2_000_000 }
+  setPrepared('book', firstPaint)
+
+  const finished: Prepared = { ...firstPaint, rest: ['y'.repeat(50_000)], retainedBytes: undefined }
+  assert.equal(replacePrepared('book', firstPaint, finished), true)
+
+  assert.equal(getPrepared('book'), finished)
+  // 10,000 bytes of content + 100,000 of rest; the retained archive is gone.
+  assert.equal(prepareCacheStats().bytes, 10_000 + 100_000)
+})
+
+test('replacePrepared will not overwrite a re-parse or resurrect an eviction', () => {
+  const original = doc(10_000, 'a')
+  const reparsed = doc(10_000, 'b')
+  const finished = { ...original, rest: ['done'] }
+
+  setPrepared('book', original)
+  setPrepared('book', reparsed)
+  assert.equal(replacePrepared('book', original, finished), false, 'stale source must not win')
+  assert.equal(getPrepared('book'), reparsed)
+
+  forgetPrepared('book')
+  assert.equal(replacePrepared('book', reparsed, finished), false, 'a forgotten entry stays forgotten')
+  assert.equal(hasPrepared('book'), false)
 })

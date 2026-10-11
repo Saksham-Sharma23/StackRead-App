@@ -47,6 +47,21 @@ export const thumbFailKey = (fileId: string) => `thumbfail:${fileId}`
  * the index while the in-memory `hiddenIds` set resets — so the "removed" file
  * silently comes back. Written at queue time and cleared on undo or commit.
  */
+/**
+ * Set while a cover is being produced for this file, cleared when that ends.
+ *
+ * A marker still present at launch means the previous process died in the
+ * middle of it — very likely *because* of it — so that file is treated as
+ * failed rather than retried into the same crash ([AUDIT4 A12](../../AUDIT4.md)).
+ */
+export const thumbBusyKey = (fileId: string) => `thumbbusy:${fileId}`
+
+/**
+ * The last fatal JS error, written by the global handler before the process
+ * dies and reported on the next launch. Message and a few stack lines only.
+ */
+export const LAST_CRASH_KEY = 'lastCrash'
+
 export const PENDING_REMOVAL_KEY = 'pendingRemoval'
 
 /**
@@ -58,3 +73,11 @@ export const PENDING_REMOVAL_KEY = 'pendingRemoval'
  * nothing breaks if an orphan survives an extra day.
  */
 export const LAST_PRUNE_KEY = 'lastPruneAt'
+
+/**
+ * When a save last left the index matching memory exactly.
+ *
+ * `pruneOrphans` treats any library file newer than this as possibly not yet
+ * recorded, and never deletes it ([AUDIT4 C1](../../AUDIT4.md)).
+ */
+export const LAST_FULL_SAVE_KEY = 'lastFullSaveAt'

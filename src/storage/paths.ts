@@ -24,6 +24,15 @@ export const LIBRARY_DIR = new Directory(Paths.document, 'library')
  *
  * `pruneOrphans` skips both by name, so nothing collects them as orphans.
  */
+/**
+ * Where a restore unpacks its archive before anything touches the library.
+ *
+ * A sibling of `LIBRARY_DIR`, never inside it: the orphan prune walks the
+ * library directory and deletes what the index does not reference, which a
+ * half-unpacked backup by definition is not ([AUDIT4 C3](../../AUDIT4.md)).
+ */
+export const RESTORE_STAGING_DIR = new Directory(Paths.document, 'restore-staging')
+
 export const INDEX_FILE = new File(LIBRARY_DIR, 'library.json')
 
 /**

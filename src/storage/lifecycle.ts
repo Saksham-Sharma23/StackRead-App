@@ -4,7 +4,9 @@ import { useSearch } from '../store/search'
 import { forgetPrepared, clearPrepared } from '../renderers/webview/prepareCache'
 import { forgetPreparedOnDisk, clearPreparedOnDisk } from '../renderers/webview/diskCache'
 import { releaseAllArchives } from '../renderers/webview/offload'
-import { forgetPrefetchFailure, resetPrefetchFailures } from '../renderers/webview/prefetch'
+// From `prefetchState`, not `prefetch`: the latter pulls the whole EPUB parser
+// into the startup bundle (AUDIT4 E2).
+import { forgetPrefetchFailure, resetPrefetchFailures } from '../renderers/webview/prefetchState'
 import { forgetSize, clearSizeCache } from './files'
 import { resetThumbnailAttempt, resetAllThumbnailAttempts } from './thumbs'
 import { forgetSnippet, clearSnippets } from '../components/useSnippet'

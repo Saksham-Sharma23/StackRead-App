@@ -134,6 +134,8 @@ export interface EpubResult {
   images: EpubImageRef[]
   /** Decompresses the registered images. Absent when the book has none. */
   loadImages?: () => Promise<EpubImage[]>
+  /** Archive bytes the thunks keep alive on the JS side. See `Prepared.retainedBytes`. */
+  retainedBytes: number
 }
 
 export interface EpubImage {
@@ -347,19 +349,16 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
   for (const item of manifest.values()) {
     if (/text\/css/i.test(item.type)) wanted.add(resolvePath(opfPath, item.href))
     /*
-     * Images travel with phase 1, and they have to.
+     * Images are deliberately **not** fetched here.
      *
-     * `registerImage` below resolves an <img> against the decompressed slice it
-     * was given, so an image left out of every slice is not merely late — it is
-     * dropped, silently, and the book renders without its illustrations. That
-     * is a bug this restructure introduced and the test for it now pins.
-     *
-     * Cheap in practice despite the wording: `MAX_TOTAL_INLINE_BYTES` still
-     * caps what is *kept*, and an image the reader never scrolls to is never
-     * encoded — the lazy delivery in `WebViewRenderer` is what makes that true,
-     * and it is unaffected by this.
+     * An earlier note claimed they had to be, because `registerImage` "resolves
+     * an <img> against the decompressed slice". It does not: it reads `sizeOf`,
+     * the central-directory listing, and never looks at a slice. Fetching them
+     * here decompressed every illustration in the book — with no budget, since
+     * `MAX_TOTAL_INLINE_BYTES` applies only at registration — and copied it all
+     * back across the worklet boundary, only for `loadImages` to decompress the
+     * budgeted subset again after the first paint ([AUDIT4 A3](../../../AUDIT4.md)).
      */
-    if (/^image\//i.test(item.type)) wanted.add(resolvePath(opfPath, item.href))
   }
   for (const href of firstSpine) wanted.add(resolvePath(opfPath, href))
 
@@ -549,16 +548,6 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
 
   if (!chapters.length) throw new Error('EPUB chapters could not be read')
 
-  /**
-   * How many chapters the first paint carries.
-   *
-   * `loadRest` appends to the same `chapters` array, so this is the boundary
-   * between what has already been delivered as `html` and what still has to be
-   * batched. Captured before the thunk can run, which is the only moment it is
-   * unambiguous.
-   */
-  const firstCount = chapters.length
-
   const style = cssParts.length
     ? `<style>${normalizeBookCss(cssParts.join('\n'))}</style>`
     : ''
@@ -619,14 +608,26 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
   }
 
   const assembleRest = async (): Promise<{ rest: string[]; totalPages: number }> => {
+    /*
+     * Local, not the shared `chapters` array.
+     *
+     * Phase 2 used to append to `chapters`, which lives as long as the thunk —
+     * so the book's assembled text was held twice once batched (the chapters
+     * and the batches made from them) for as long as the cache kept the entry,
+     * and a second run appended it all again ([AUDIT4 A4, B2](../../../AUDIT4.md)).
+     * Built here, the chapters are garbage the moment the batches exist.
+     */
+    const restChapters: string[] = []
+    let restChars = 0
+
     if (restSpine.length) {
       const restPaths = restSpine.map((href) => resolvePath(opfPath, href))
       const restZip = await archive.unzip(restPaths)
       for (const href of restSpine) {
         const built = assembleChapter(href, restZip)
         if (!built) continue
-        chapters.push(built.html)
-        charCount += built.chars
+        restChapters.push(built.html)
+        restChars += built.chars
       }
     }
 
@@ -638,14 +639,14 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
      * against (`seekToHref` matches on `data-src`), so a half-delivered chapter
      * would mean a chapter link that lands nowhere.
      *
-     * The first-paint chapters are skipped here — they already went out with
-     * `html`.
+     * Only phase 2's chapters are packed — the first paint already went out
+     * with `html`.
      */
     const batches: string[] = []
     let batchChars = 0
     let batch: string[] = []
 
-    for (const chapter of chapters.slice(firstCount)) {
+    for (const chapter of restChapters) {
       batch.push(chapter)
       batchChars += chapter.length
       if (batchChars >= BATCH_CHARS) {
@@ -660,14 +661,30 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
       rest: batches,
       // Exact now that every chapter has been counted. The publisher's own
       // page list still wins where the book declares one.
-      totalPages: pageMarks.length || pagesFromChars(charCount, CHARS_PER_PAGE),
+      totalPages: pageMarks.length || pagesFromChars(charCount + restChars, CHARS_PER_PAGE),
     }
   }
 
+  /** The images registered so far — by phase 1 only, at this point. */
   const imageList: EpubImageRef[] = []
   for (const [token, image] of images) {
     imageList.push({ token, mime: image.mime, path: image.path })
   }
+
+  /*
+   * Whether there may be images to fetch, which is not the same as whether
+   * phase 1 found any.
+   *
+   * `imageList` is a snapshot taken before phase 2 runs, and phase 2's chapters
+   * register images of their own. Gating the image thunk on the snapshot meant
+   * a book whose illustrations start in chapter 4 had no image thunk at all,
+   * and one with images on both sides fetched only the first three chapters'
+   * ([AUDIT4 B3](../../../AUDIT4.md)). Any image in the manifest, with chapters
+   * still to assemble, is reason enough to keep the thunk.
+   */
+  const mayHaveImages =
+    imageList.length > 0 ||
+    (restSpine.length > 0 && [...manifest.values()].some((i) => /^image\//i.test(i.type)))
 
   /**
    * Fetches the registered images, in one targeted unzip.
@@ -681,10 +698,28 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
    * would cost far more than the one this makes.
    */
   const fetchImages = async (): Promise<EpubImage[]> => {
-    if (!imageList.length) return []
-    const slice = await archive.unzip(imageList.map((i) => i.path))
+    /*
+     * Phase 2 first, so its chapters' images are registered before the list is
+     * read. `loadRest` is memoised: when the renderer has already started it —
+     * it drains text first — this waits on the same run rather than starting a
+     * second. If it fails, the images phase 1 found still load.
+     */
+    if (restSpine.length) {
+      try {
+        await loadRest()
+      } catch {
+        // Phase 2 failed; deliver what was registered.
+      }
+    }
+
+    // Read live, not from the phase-1 snapshot.
+    const refs: EpubImageRef[] = []
+    for (const [token, image] of images) refs.push({ token, mime: image.mime, path: image.path })
+    if (!refs.length) return []
+
+    const slice = await archive.unzip(refs.map((i) => i.path))
     const out: EpubImage[] = []
-    for (const ref of imageList) {
+    for (const ref of refs) {
       const entry = slice[ref.path]
       // An image the archive turns out not to contain simply does not arrive;
       // its element stays empty, exactly as a failed decode already does.
@@ -694,29 +729,42 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
   }
 
   /*
-   * Memoised like `loadRest`, for the same two reasons: a cached book must not
-   * decompress its images again for every renderer mounted from the cache, and
-   * the archive is released only once each thunk has finished.
+   * Deduplicated while in flight, but the result is **not** kept.
+   *
+   * Unlike `loadRest`'s batches, which become the cached book's text, these are
+   * up to `MAX_TOTAL_INLINE_BYTES` of decoded image bytes. Memoising them would
+   * hold every illustration in the cache for as long as it kept the entry,
+   * uncounted — the A4 leak in a new place. So two renderers asking at once
+   * share one fetch, and a later mount fetches again, through the handle, which
+   * re-parks the archive from disk if it has gone.
+   *
+   * The first success still settles, so the archive is released once both
+   * thunks have finished once.
    */
-  let imagesDone: Promise<EpubImage[]> | null = null
+  let imagesInFlight: Promise<EpubImage[]> | null = null
+  let imagesSettled = false
 
   const loadImages = (): Promise<EpubImage[]> => {
-    if (!imagesDone) {
-      imagesDone = fetchImages().then(
+    if (!imagesInFlight) {
+      imagesInFlight = fetchImages().then(
         (result) => {
-          settle()
+          imagesInFlight = null
+          if (!imagesSettled) {
+            imagesSettled = true
+            settle()
+          }
           return result
         },
         (err: unknown) => {
-          imagesDone = null
+          imagesInFlight = null
           throw err
         },
       )
     }
-    return imagesDone
+    return imagesInFlight
   }
 
-  outstanding = (restSpine.length ? 1 : 0) + (imageList.length ? 1 : 0)
+  outstanding = (restSpine.length ? 1 : 0) + (mayHaveImages ? 1 : 0)
   // Nothing deferred: phase 1 was the whole book, so the worker can drop it now.
   if (!outstanding) archive.release()
 
@@ -739,7 +787,8 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
     pageMarks.length || provisionalPageCount(spinePaths, sizeOf)
 
   return {
-    html: style + chapters.slice(0, firstCount).join('\n'),
+    // Phase 1's chapters only. Phase 2 builds its own and never touches these.
+    html: style + chapters.join('\n'),
     title,
     toc,
     totalPages,
@@ -748,8 +797,11 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
     // `loadRest`.
     rest: [],
     images: imageList,
-    loadImages: imageList.length ? loadImages : undefined,
+    loadImages: mayHaveImages ? loadImages : undefined,
     loadRest: restSpine.length ? loadRest : undefined,
+    // Zero when parked on the worker. Read once, so it stays conservative after
+    // a release; `replacePrepared` re-measures once phase 2 has finished.
+    retainedBytes: outstanding ? archive.jsBytes : 0,
   }
 }
 

@@ -3,7 +3,7 @@ import { ImageManipulator, SaveFormat } from 'expo-image-manipulator'
 
 import type { FileEntry } from '../types'
 import { LIBRARY_DIR, fileUri, thumbFile } from './paths'
-import { storage, thumbFailKey } from './mmkv'
+import { storage, thumbBusyKey, thumbFailKey } from './mmkv'
 import { extractCover } from './covers'
 import { thumbHashFor } from './thumbhash'
 
@@ -43,6 +43,8 @@ const attempted = new Set<string>()
 
 /** True when a previous launch established that this file has no cover. */
 function failedBefore(fileId: string): boolean {
+  // An attempt the previous process died in counts as a failure; sweep first.
+  sweepInterruptedAttempts()
   return storage.getBoolean(thumbFailKey(fileId)) === true
 }
 
@@ -55,6 +57,64 @@ function failedBefore(fileId: string): boolean {
  */
 function rememberFailure(fileId: string): void {
   storage.set(thumbFailKey(fileId), true)
+}
+
+/**
+ * Records a definite failure from outside this module — `PdfCoverFactory`'s
+ * pdfium could not open the file. Durable, like `rememberFailure`.
+ */
+export function markThumbnailFailed(fileId: string): void {
+  attempted.add(fileId)
+  rememberFailure(fileId)
+}
+
+/*
+ * ---- crash-safe attempts ---------------------------------------------------
+ *
+ * A cover attempt that *kills the process* — an out-of-memory unzip, a pdfium
+ * crash on a malformed PDF — never reaches `rememberFailure`, and `attempted`
+ * dies with the process. So the next launch tried the same file again, and
+ * crashed again, every launch ([AUDIT4 A12](../../AUDIT4.md)).
+ *
+ * The fix is a marker written *before* the work and removed after it, whatever
+ * the outcome. One still present at the next launch can only mean the process
+ * died during that attempt, and that file is marked failed instead of retried.
+ */
+
+/** Marks the start of a cover attempt that could take the process down. */
+export function beginThumbnailAttempt(fileId: string): void {
+  sweepInterruptedAttempts()
+  storage.set(thumbBusyKey(fileId), true)
+}
+
+/** Marks its end, whatever the outcome. */
+export function endThumbnailAttempt(fileId: string): void {
+  storage.remove(thumbBusyKey(fileId))
+}
+
+let swept = false
+
+/**
+ * Converts the previous process's unfinished attempts into failures, once.
+ *
+ * Run lazily, on the first thumbnail question asked this launch, rather than at
+ * module load: this module is in the startup import graph, and scanning MMKV's
+ * keys before the board paints would be a cost paid by every launch.
+ */
+function sweepInterruptedAttempts(): void {
+  if (swept) return
+  swept = true
+  try {
+    for (const key of storage.getAllKeys()) {
+      if (!key.startsWith('thumbbusy:')) continue
+      const fileId = key.slice('thumbbusy:'.length)
+      storage.remove(key)
+      rememberFailure(fileId)
+      console.warn(`[stackread] a cover attempt for ${fileId} did not finish last session; not retrying it`)
+    }
+  } catch {
+    // Unreadable keys mean no sweep this launch, not a crash.
+  }
 }
 
 function acquire(): Promise<void> {
@@ -159,6 +219,9 @@ export async function ensureThumbnail(entry: FileEntry): Promise<ThumbResult | n
   await acquire()
   /** Staged cover bytes, deleted in `finally` whether or not we succeeded. */
   let staged: File | null = null
+  // Unzipping a book and decoding an image are both things that can take the
+  // process down; mark the attempt so a crash here is not repeated next launch.
+  beginThumbnailAttempt(entry.id)
   try {
     const source = new File(LIBRARY_DIR, entry.storedName)
     if (!source.exists) return null
@@ -221,6 +284,7 @@ export async function ensureThumbnail(entry: FileEntry): Promise<ThumbResult | n
         // Cache dir; the OS reclaims it.
       }
     }
+    endThumbnailAttempt(entry.id)
     release()
   }
 }
@@ -294,6 +358,8 @@ export function hasAttemptedThumbnail(fileId: string): boolean {
 export function resetThumbnailAttempt(fileId: string): void {
   attempted.delete(fileId)
   storage.remove(thumbFailKey(fileId))
+  // A re-imported file is new bytes; an old interrupted attempt says nothing about it.
+  storage.remove(thumbBusyKey(fileId))
 }
 
 /**

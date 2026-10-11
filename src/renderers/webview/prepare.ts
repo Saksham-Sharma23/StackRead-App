@@ -8,7 +8,7 @@ import { loadEpubAsHtml } from './epub'
 import { mimeForImage } from './bytes'
 // Base64 encoding is no longer done here: images are carried as raw bytes and
 // encoded once, lazily, as they are delivered to the viewer.
-import { unzipOffThread, type OffloadLane } from './offload'
+import { openArchive, type ArchiveHandle, type OffloadLane } from './offload'
 import { beginPrepare, now, type PrepareTrace } from '../../ui/perf'
 import { sanitizeHtml } from './sanitize'
 import {
@@ -105,6 +105,17 @@ export interface Prepared {
    * that has none.
    */
   imageRefs?: PreparedImageRef[]
+  /**
+   * Bytes the deferred thunks keep alive on the JS side, beyond what the fields
+   * above hold.
+   *
+   * EPUB only, and normally zero: its archive is parked on the worker runtime,
+   * where the thunks reach it by key. It is the whole file when the worker path
+   * was unavailable and the archive stayed in JS. `prepareCache` charges it to
+   * the entry, so a book held through its closures is budgeted like one held
+   * through its content ([AUDIT4 A4](../../../AUDIT4.md)).
+   */
+  retainedBytes?: number
 }
 
 export interface PreparedImage {
@@ -152,6 +163,17 @@ const MAX_INLINE_IMAGE_BYTES = 2_000_000
  * bridge on top.
  */
 const MAX_TOTAL_IMAGE_BYTES = 24_000_000
+
+/** Largest text entry an archive listing previews inline. */
+const MAX_TEXT_PREVIEW_BYTES = 120_000
+
+/**
+ * Total text an archive listing previews.
+ *
+ * Without it the per-file cap bounds nothing: an archive of ten thousand small
+ * source files would be decompressed in full to build one listing.
+ */
+const MAX_TOTAL_TEXT_PREVIEW_BYTES = 4_000_000
 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) =>
@@ -358,14 +380,48 @@ async function prepareComic(
   lane: OffloadLane,
   trace?: PrepareTrace,
 ): Promise<Prepared> {
-  // A comic is the heaviest of these: dozens of full-page images, each unzipped
-  // and then base64-encoded. Both halves run off the JS thread.
-  const zip = await unzipOffThread(bytes, lane, trace)
-  const pages = Object.keys(zip)
+  /*
+   * Choose the pages from the listing, then decompress only those.
+   *
+   * This used to unzip the whole archive and apply the budgets afterwards — so
+   * a 40MB archive within `MAX_PREPARE_BYTES` that declared gigabytes of
+   * content was fully expanded before anything said no
+   * ([AUDIT4 A11](../../../AUDIT4.md)). The central directory gives every
+   * page's size for free, so the budget is applied before a byte is inflated,
+   * and whatever is not a page (credits, `ComicInfo.xml`, a stray PDF) is never
+   * touched. `zipRead` also refuses an entry that inflates past its declared
+   * size, so a lying directory cannot smuggle more through.
+   */
+  const archive = await openArchive(async () => bytes, lane, trace)
+  try {
+    return await comicFromArchive(archive, trace)
+  } finally {
+    archive.release()
+  }
+}
+
+async function comicFromArchive(archive: ArchiveHandle, trace?: PrepareTrace): Promise<Prepared> {
+  const sizes = new Map(archive.entries.map((e) => [e.name, e.originalSize]))
+  const pages = archive.entries
+    .map((e) => e.name)
     .filter((p) => IMAGE_RE.test(p) && !p.startsWith('__MACOSX'))
     .sort(naturalCompare)
 
   if (!pages.length) throw new Error('No pages found in this comic')
+
+  // Same rules as before, applied to declared sizes: an oversized page is
+  // skipped, and past the total budget the rest are dropped.
+  const chosen: string[] = []
+  let budget = 0
+  for (const p of pages) {
+    const size = sizes.get(p) ?? 0
+    if (size > MAX_INLINE_IMAGE_BYTES) continue
+    if (budget + size > MAX_TOTAL_IMAGE_BYTES) break
+    budget += size
+    chosen.push(p)
+  }
+
+  const zip = await archive.unzip(chosen, trace)
 
   /*
    * Pages are referenced by token and streamed as bytes, not embedded.
@@ -381,15 +437,10 @@ async function prepareComic(
    */
   const imgs: string[] = []
   const images: PreparedImage[] = []
-  let budget = 0
 
-  for (const p of pages) {
+  for (const p of chosen) {
     const entry = zip[p]
-    if (!entry || entry.length > MAX_INLINE_IMAGE_BYTES) continue
-    // Same total budget as a book: past it, pages are dropped rather than the
-    // comic failing to open.
-    if (budget + entry.length > MAX_TOTAL_IMAGE_BYTES) break
-    budget += entry.length
+    if (!entry) continue
 
     const token = `sr-img-${images.length}`
     images.push({ token, mime: mimeForImage(p), bytes: entry })
@@ -420,31 +471,65 @@ async function prepareArchive(
   lane: OffloadLane,
   trace?: PrepareTrace,
 ): Promise<Prepared> {
-  const zip = await unzipOffThread(bytes, lane, trace)
-  const names = Object.keys(zip)
+  // Listed, budgeted, then targeted — see `prepareComic` for why
+  // ([AUDIT4 A11](../../../AUDIT4.md)).
+  const archive = await openArchive(async () => bytes, lane, trace)
+  try {
+    return await listingFromArchive(archive, trace)
+  } finally {
+    archive.release()
+  }
+}
+
+async function listingFromArchive(archive: ArchiveHandle, trace?: PrepareTrace): Promise<Prepared> {
+  const sizes = new Map(archive.entries.map((e) => [e.name, e.originalSize]))
+  const names = archive.entries
+    .map((e) => e.name)
     .filter((p) => !p.endsWith('/') && !p.startsWith('__MACOSX'))
     .sort(naturalCompare)
 
   if (!names.length) throw new Error('This archive is empty')
 
+  /*
+   * Which entries get a preview, decided from declared sizes alone.
+   *
+   * Images within the per-image cap until the image budget runs out; small
+   * text files until the text budget does. Everything else is a row with a
+   * name and a size and is never decompressed. The text budget is new: one
+   * 120KB file is nothing, but ten thousand of them is the whole archive again.
+   */
+  const previewImages = new Set<string>()
+  const previewText = new Set<string>()
+  let imageBudget = 0
+  let textBudget = 0
+  for (const p of names) {
+    const size = sizes.get(p) ?? 0
+    if (IMAGE_RE.test(p)) {
+      if (size <= MAX_INLINE_IMAGE_BYTES && imageBudget + size <= MAX_TOTAL_IMAGE_BYTES) {
+        imageBudget += size
+        previewImages.add(p)
+      }
+    } else if (TEXT_RE.test(p) && size <= MAX_TEXT_PREVIEW_BYTES) {
+      if (textBudget + size <= MAX_TOTAL_TEXT_PREVIEW_BYTES) {
+        textBudget += size
+        previewText.add(p)
+      }
+    }
+  }
+
+  const zip = await archive.unzip([...previewImages, ...previewText], trace)
+
   const rows: string[] = []
   const images: PreparedImage[] = []
-  let budget = 0
 
   for (const p of names) {
     const entry = zip[p]
-    const size = entry?.length ?? 0
+    const size = sizes.get(p) ?? 0
     const head = `<h3>${escapeHtml(p)}</h3><p><code>${formatBytes(size)}</code></p>`
 
-    if (
-      entry &&
-      IMAGE_RE.test(p) &&
-      size <= MAX_INLINE_IMAGE_BYTES &&
-      budget + size <= MAX_TOTAL_IMAGE_BYTES
-    ) {
+    if (entry && previewImages.has(p)) {
       // Streamed as bytes like every other image path; past the budget an entry
       // still gets its row, just without a preview.
-      budget += size
       const token = `sr-img-${images.length}`
       images.push({ token, mime: mimeForImage(p), bytes: entry })
       rows.push(`<div class="sr-chapter">${head}<img data-sr-img="${token}" alt=""></div>`)
@@ -470,7 +555,7 @@ async function prepareArchive(
      *
      * Pinned by `archiveText.test.ts`.
      */
-    if (entry && TEXT_RE.test(p) && size <= 120_000) {
+    if (entry && previewText.has(p)) {
       rows.push(
         `<div class="sr-chapter">${head}<pre><code>${escapeHtml(strFromU8(entry))}</code></pre></div>`,
       )
@@ -583,6 +668,7 @@ async function prepareByFormat(
         // References, not bytes — see `PreparedImageRef`.
         imageRefs: book.images.length ? book.images : undefined,
         loadImages: book.loadImages,
+        retainedBytes: book.retainedBytes || undefined,
       }
     }
 

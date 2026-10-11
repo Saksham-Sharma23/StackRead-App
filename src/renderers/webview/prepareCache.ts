@@ -190,6 +190,17 @@ function sizeOf(prepared: Prepared): number {
    * of one.
    */
 
+  /*
+   * What the deferred thunks hold that no field shows.
+   *
+   * Uncounted, an EPUB whose archive stayed on the JS side looked like a few
+   * hundred kilobytes of first-paint markup while keeping the whole file alive
+   * through `loadRest` / `loadImages` — six of them fit the tail budget
+   * ([AUDIT4 A4](../../AUDIT4.md)). Zero when the archive is parked on the
+   * worker, which is the normal case.
+   */
+  bytes += prepared.retainedBytes ?? 0
+
   return bytes
 }
 
@@ -325,6 +336,29 @@ function evict(): void {
     cache.delete(victim)
     rememberGhost(victim)
   }
+}
+
+/**
+ * Replaces a cached document with a later form of itself, if it is still cached.
+ *
+ * For an EPUB whose phase 2 has finished: the entry held a first paint plus a
+ * thunk, and becomes the whole book with no thunk. Re-measured, so the budget
+ * sees the text it now holds; and a later mount streams `rest` directly rather
+ * than reaching back into the archive ([AUDIT4 A4](../../AUDIT4.md)).
+ *
+ * Compared by identity against `from`. If the entry was evicted, forgotten or
+ * replaced by a re-parse in the meantime, this does nothing: writing a stale
+ * document over a fresh one, or resurrecting one the budget threw out, would
+ * both be wrong. Recency and pin status are left as they are.
+ */
+export function replacePrepared(fileId: string, from: Prepared, to: Prepared): boolean {
+  const entry = cache.get(fileId)
+  if (!entry || entry.prepared !== from) return false
+
+  entry.prepared = to
+  entry.bytes = sizeOf(to)
+  evict()
+  return true
 }
 
 /** Drops one file, for when its bytes change or it is removed from the library. */

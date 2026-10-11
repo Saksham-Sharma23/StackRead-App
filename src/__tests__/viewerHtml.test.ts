@@ -29,7 +29,7 @@ const THEME = {
 
 function viewerScript(): string {
   const html = buildViewerHtml(THEME, 0)
-  const match = html.match(/<script>([\s\S]*?)<\/script>/)
+  const match = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)
   assert.ok(match, 'viewer HTML contains no script block')
   return match[1]
 }
@@ -54,7 +54,7 @@ test('the viewer parses with timing enabled as well as disabled', () => {
    */
   for (const debug of [false, true]) {
     const html = buildViewerHtml(THEME, 0, debug)
-    const match = html.match(/<script>([\s\S]*?)<\/script>/)
+    const match = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)
     assert.ok(match, `viewer HTML contains no script block (debug=${debug})`)
     assert.doesNotThrow(
       () => new Function(match[1]),
@@ -63,8 +63,11 @@ test('the viewer parses with timing enabled as well as disabled', () => {
     assert.match(match[1], debug ? /var SR_DEBUG = true;/ : /var SR_DEBUG = false;/)
   }
 
-  const off = buildViewerHtml(THEME, 0, false)
-  const on = buildViewerHtml(THEME, 0, true)
+  // The CSP nonce is fresh per document (AUDIT4 D3), so it is normalised out
+  // before comparing: it is the only other thing allowed to differ.
+  const sameNonce = (h: string) => h.replace(/nonce-[a-z0-9]+|nonce="[a-z0-9]+"/g, 'NONCE')
+  const off = sameNonce(buildViewerHtml(THEME, 0, false))
+  const on = sameNonce(buildViewerHtml(THEME, 0, true))
   assert.equal(
     off.replace('var SR_DEBUG = false;', 'var SR_DEBUG = true;'),
     on,
@@ -699,7 +702,7 @@ test('the emitted viewer still parses with an island present', () => {
   // The island sits outside the program, but the boot code that reads it does
   // not — so this is the same guarantee the top of this file exists for.
   const html = buildViewerHtml(THEME, 0, true, SAMPLE_PAYLOAD)
-  const match = html.match(/<script>([\s\S]*?)<\/script>/)
+  const match = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)
   assert.ok(match, 'viewer HTML contains no program block')
   assert.doesNotThrow(() => new Function(match[1]))
 })
@@ -714,7 +717,7 @@ test('boot is still posted when a payload is inlined', () => {
    * still render, once, rather than not at all.
    */
   const js = buildViewerHtml(THEME, 0, false, SAMPLE_PAYLOAD).match(
-    /<script>([\s\S]*?)<\/script>/,
+    /<script nonce="[^"]+">([\s\S]*?)<\/script>/,
   )![1]
   assert.match(js, /post\(\{ type: 'boot'/)
   assert.match(js, /getElementById\('sr-initial'\)/)

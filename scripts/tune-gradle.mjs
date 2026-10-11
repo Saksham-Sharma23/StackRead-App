@@ -118,6 +118,41 @@ ${KEEP_MARKER}
     writeFileSync(PROGUARD, pg)
     console.log('[tune-gradle] added R8 keep rules to proguard-rules.pro')
   }
+
+  /*
+   * Second block, with its own marker, so it reaches files that already carry
+   * the first one — the block above is skipped once its marker is present
+   * ([AUDIT4 E1](../AUDIT4.md)).
+   *
+   * Verified against the cached artifacts rather than assumed:
+   *  - `io.legere:pdfiumandroid:1.0.32` ships consumer rules that already keep
+   *    `io.legere.pdfiumandroid.**`. Repeated here so the guarantee does not
+   *    hang on a dependency's packaging: react-native-pdf serialises the PDF
+   *    outline (`PdfDocument.Bookmark`) with Gson, and Gson reads field names
+   *    reflectively — renamed fields would make the outline JSON meaningless.
+   *  - Both the viewer (`com.github.barteksc.pdfviewer`, via the
+   *    `com.github.zacharee:AndroidPdfViewer` fork) and `modules/pdf-text` call
+   *    pdfium through that library, whose calls run inside
+   *    `synchronized(PdfiumCore.lock)` — one process-wide lock. So the reader
+   *    and find-in-PDF never call into pdfium concurrently.
+   *  - The local Expo module is resolved by name from the generated package
+   *    list.
+   */
+  const KEEP_MARKER_V2 = '# --- StackRead keep rules v2 (AUDIT4 E1) ---'
+  pg = readFileSync(PROGUARD, 'utf8')
+  if (!pg.includes(KEEP_MARKER_V2)) {
+    pg += `
+${KEEP_MARKER_V2}
+# pdfium wrapper used by react-native-pdf and modules/pdf-text; Gson reads its fields.
+-keep class io.legere.pdfiumandroid.** { *; }
+-keepattributes Signature, *Annotation*, InnerClasses, EnclosingMethod
+
+# The local Expo module, instantiated by name.
+-keep class expo.modules.pdftext.** { *; }
+`
+    writeFileSync(PROGUARD, pg)
+    console.log('[tune-gradle] added v2 R8 keep rules to proguard-rules.pro')
+  }
 }
 
 console.log(

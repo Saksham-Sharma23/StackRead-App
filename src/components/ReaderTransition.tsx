@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { StyleSheet, useWindowDimensions } from 'react-native'
 import Animated, {
   interpolate,
@@ -106,6 +106,24 @@ export function ReaderTransition({ from, closing, onClosed, backdrop, children }
   const onClosedRef = useRef(onClosed)
   onClosedRef.current = onClosed
 
+  /*
+   * What the worklet calls back into, instead of the ref itself
+   * ([AUDIT4 E5](../../AUDIT4.md)).
+   *
+   * The worklet below used to capture `onClosedRef` and call
+   * `runOnJS(onClosedRef.current)`. Capturing a plain object hands it to the
+   * worklets serialiser, which freezes it in development builds — so from then
+   * on the assignment above logged "Tried to modify key `current`…" on every
+   * render and silently stopped updating. It worked only because `onClosed`
+   * happens to be stable.
+   *
+   * A stable function closes over the ref on the JS side, where it stays an
+   * ordinary mutable object. The worklet captures only the function.
+   */
+  const finishClose = useCallback(() => {
+    onClosedRef.current()
+  }, [])
+
   useEffect(() => {
     if (!closing) return
 
@@ -132,9 +150,9 @@ export function ReaderTransition({ from, closing, onClosed, backdrop, children }
      */
     t.value = withTiming(0, Timing.exit, (finished) => {
       'worklet'
-      if (finished) runOnJS(onClosedRef.current)()
+      if (finished) runOnJS(finishClose)()
     })
-  }, [closing, reduced, t])
+  }, [closing, reduced, t, finishClose])
 
   const style = useAnimatedStyle(() => ({
     transform: [
@@ -183,7 +201,16 @@ export function ReaderTransition({ from, closing, onClosed, backdrop, children }
         style={[StyleSheet.absoluteFill, { backgroundColor: backdrop }, backdropStyle]}
         pointerEvents="none"
       />
-      <Animated.View style={[StyleSheet.absoluteFill, style]} collapsable={false}>
+      {/*
+        No touches once closing. The fold ends at opacity 0, but `App` may keep
+        the reader mounted a little longer while a PDF finishes loading
+        (`whenPdfiumSettled`), and an invisible reader must not swallow taps.
+      */}
+      <Animated.View
+        style={[StyleSheet.absoluteFill, style]}
+        collapsable={false}
+        pointerEvents={closing ? 'none' : 'auto'}
+      >
         {children}
       </Animated.View>
     </>

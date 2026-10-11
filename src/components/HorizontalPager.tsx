@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { StyleSheet, View, useWindowDimensions } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import Animated, {
@@ -279,6 +279,28 @@ export function HorizontalPager({
     },
     [width, progress],
   )
+
+  /*
+   * The zoom lock belongs to a file, so it is cleared when the file changes
+   * ([AUDIT4 B5](../../AUDIT4.md)).
+   *
+   * `isZoomed` only ever changed when the active renderer reported a scale, and
+   * PDF and WebView renderers report only on a *change*. So zooming a page and
+   * then picking another file from the File sheet (or switching group) left
+   * the lock set for a document that was never zoomed, and the pager refused
+   * every swipe until the user happened to pinch.
+   *
+   * A layout effect, deliberately. Layout effects run before any passive
+   * effect, so this reset lands *before* the new renderer's own mount effect —
+   * which is where `ImageRenderer` re-reports a remembered zoom. A passive
+   * effect here would run after it (parents' effects follow their children's)
+   * and wipe out a legitimate lock.
+   */
+  const activeId = files[index]?.id
+  useLayoutEffect(() => {
+    zoomed.value = false
+    setIsZoomed(false)
+  }, [activeId, zoomed])
 
   const handleScaleChange = useCallback(
     (scale: number) => {

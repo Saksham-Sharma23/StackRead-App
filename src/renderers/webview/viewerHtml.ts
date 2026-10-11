@@ -35,6 +35,21 @@ export interface ViewerTheme {
  */
 export type ViewerMode = 'paper' | 'items' | 'flow'
 
+/**
+ * A fresh CSP nonce per document.
+ *
+ * Content cannot read it -- browsers hide a script's nonce from the DOM once
+ * the page has parsed -- and markup injected later could not use it anyway,
+ * since it never becomes a script element the policy would admit. So this needs
+ * to be unpredictable to the *file*, which `Math.random` is; it is not a secret
+ * from anyone with the device.
+ */
+function makeNonce(): string {
+  let out = ''
+  while (out.length < 24) out += Math.random().toString(36).slice(2)
+  return out.slice(0, 24)
+}
+
 export function buildViewerHtml(
   theme: ViewerTheme,
   initialScroll: number,
@@ -79,10 +94,38 @@ export function buildViewerHtml(
    */
   initialPayload?: unknown,
 ): string {
+  const nonce = makeNonce()
   return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
+${
+    /*
+     * A Content-Security-Policy for the whole viewer -- AUDIT4 D1 and D3.
+     *
+     * The WebView refuses *navigation*, but fetch, XHR and image loads are not
+     * navigations: a sanitised HTML, DOCX or Markdown file kept an img pointing
+     * at a remote server, and opening the document told that server so. And
+     * the sanitisers are the only thing between a hostile file and script in
+     * this page. This makes both properties of the page itself:
+     *
+     *  - default-src 'none': nothing is fetched from anywhere -- no network, no
+     *    files -- unless a directive below allows it.
+     *  - script-src with a per-document nonce: only the program below runs.
+     *    Inline event handlers in content (onerror=, onload=) cannot execute
+     *    whatever either sanitiser misses, because a nonce policy forbids them.
+     *  - img-src / media-src blob: and data:: images arrive as blob: URLs built
+     *    in this page; nothing else is a legitimate source.
+     *  - style-src 'unsafe-inline': the viewer's own stylesheet and the
+     *    reader-settings styles are inline. Styles cannot fetch here anyway --
+     *    default-src covers what url() could load.
+     *
+     * Host-side injectJavaScript and postMessage are evaluated by the WebView
+     * itself and are not subject to the page's policy, so streaming and
+     * messaging are unaffected.
+     */
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src blob: data:; media-src blob: data:; font-src data:; base-uri 'none'; form-action 'none'">`
+  }
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=6, user-scalable=yes">
 <style>
   :root {
@@ -301,7 +344,7 @@ ${
           '\\u003c',
         )}</script>`
   }
-<script>
+<script nonce="${nonce}">
 (function () {
   var post = function (msg) {
     if (window.ReactNativeWebView) {
@@ -374,6 +417,16 @@ ${
    */
   var pendingScroll = 0;
   var pendingHref = null;
+
+  /*
+   * Whether every batch of the current document has arrived.
+   *
+   * A followed link whose target is not in the DOM is parked in pendingHref
+   * only while more content is coming; once the document is complete, a missing
+   * target is simply missing, and parking it would make a later, unrelated
+   * append jump the reader somewhere they never asked to go.
+   */
+  var streamingDone = true;
 
   /** A4 proportion, used only to space the painted separators. */
   var PAGE_ASPECT = 1.414;
@@ -881,8 +934,8 @@ ${
   }
 
   /** Scrolls to a TOC target, matched against the chapter it came from. */
-  function seekToHref(href) {
-    if (!href) return;
+  /** The element an href points at, if it is in the DOM yet. */
+  function findHrefTarget(href) {
     var hash = href.indexOf('#');
     var path = hash >= 0 ? href.slice(0, hash) : href;
     var frag = hash >= 0 ? href.slice(hash + 1) : null;
@@ -900,6 +953,12 @@ ${
         }
       }
     }
+    return node;
+  }
+
+  function seekToHref(href) {
+    if (!href) return;
+    var node = findHrefTarget(href);
     /*
      * Not here yet.
      *
@@ -1349,6 +1408,69 @@ ${
     reportPosition(true);
   });
 
+  /* ==================== links ====================
+   *
+   * Every link tap is handled here and never becomes a navigation (AUDIT4 B6).
+   *
+   * Left to the browser, an in-book link -- a footnote, a chapter's own table of
+   * contents -- resolved against about:blank and went nowhere. Worse, an
+   * external one failed the WebView's origin whitelist, and react-native-webview
+   * answers that by handing the URL to the OS: a book could open the browser,
+   * the dialler or the store with a URL of its choosing, without asking.
+   *
+   * Now: in-book links scroll to their target, resolved against the chapter
+   * they sit in; anything with a scheme goes to the host as a message, and the
+   * host decides whether to offer it to the user. Capture phase, so the default
+   * is prevented before anything else sees the click.
+   */
+
+  /** Resolves an in-book href against the path of the chapter it appears in. */
+  function resolveHref(base, href) {
+    if (href.charAt(0) === '#') return base + href;
+
+    var hash = href.indexOf('#');
+    var path = hash >= 0 ? href.slice(0, hash) : href;
+    var frag = hash >= 0 ? href.slice(hash) : '';
+    try { path = decodeURIComponent(path); } catch (e) { /* keep it as written */ }
+
+    if (!base || path.charAt(0) === '/') return path.replace(/^[/]+/, '') + frag;
+
+    var parts = base.split('/');
+    parts.pop();
+    var segs = path.split('/');
+    for (var i = 0; i < segs.length; i++) {
+      if (segs[i] === '.' || segs[i] === '') continue;
+      if (segs[i] === '..') parts.pop();
+      else parts.push(segs[i]);
+    }
+    return parts.join('/') + frag;
+  }
+
+  /** Scrolls to an in-book target; parks it only while more content is coming. */
+  function followInternalLink(target) {
+    if (findHrefTarget(target) || !streamingDone) seekToHref(target);
+  }
+
+  document.addEventListener('click', function (e) {
+    var start = e.target && e.target.nodeType === 1 ? e.target : e.target && e.target.parentElement;
+    var link = start && start.closest ? start.closest('a, area') : null;
+    if (!link) return;
+
+    // SVG links carry xlink:href; a link with neither is just styled text.
+    var href = link.getAttribute('href') || link.getAttribute('xlink:href') || '';
+    e.preventDefault();
+    if (!href) return;
+
+    if (/^[a-z][a-z0-9+.-]*:/i.test(href)) {
+      post({ type: 'link', href: href.slice(0, 2048) });
+      return;
+    }
+
+    var chapter = link.closest('.sr-chapter');
+    var base = chapter ? chapter.getAttribute('data-src') || '' : '';
+    followInternalLink(resolveHref(base, href));
+  }, true);
+
   function render(payload) {
     /*
      * Nothing to render is not an error.
@@ -1363,6 +1485,7 @@ ${
     try {
       mode = payload.mode || 'paper';
       contentPages = payload.totalPages || 0;
+      streamingDone = !payload.streaming;
       if (payload.settings) applySettings(payload.settings);
 
       el.className =
@@ -1412,6 +1535,14 @@ ${
         if (scrollToAnchor(payload.anchor)) {
           pendingScroll = 0;
           reportPosition(true);
+          /*
+           * Ready, then return -- the early exit used to skip the ready at the
+           * bottom of this function. Every document read before has an anchor,
+           * so reopening one left the host waiting forever: the loading cover
+           * never lifted, the rest of the book never streamed, and seek,
+           * search and settings were never sent (AUDIT4 B1).
+           */
+          post({ type: 'ready' });
           return;
         }
         // Past what has arrived so far: park it for appendChunk, exactly as an
@@ -1538,7 +1669,12 @@ ${
       for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       appendChunk(new TextDecoder('utf-8').decode(bytes), isLast);
     } catch (e) {
-      post({ type: 'error', message: 'batch decode failed: ' + String(e) });
+      /*
+       * A warning, not an error. The host treats error as a failed open and
+       * replaces the whole renderer with an error screen -- discarding a book
+       * that is on screen and readable for want of one batch (AUDIT4 B4).
+       */
+      post({ type: 'warn', message: 'batch decode failed: ' + String(e) });
     }
   };
 
@@ -1553,7 +1689,13 @@ ${
      * recreate every image already decoded. insertAdjacentHTML appends without
      * touching what is already there.
      */
-    el.insertAdjacentHTML('beforeend', html);
+    /*
+     * Sanitised here exactly as render() sanitises the first paint -- AUDIT4 D1.
+     * Batches used to go in raw, so chapter four onward of every book was
+     * protected by the native regex pass alone: the "two passes, both
+     * load-bearing" rule held only for the first three chapters.
+     */
+    el.insertAdjacentHTML('beforeend', sanitize(html));
 
     /*
      * New text means the flat search index no longer describes the document.
@@ -1599,7 +1741,10 @@ ${
     }
 
     reportPosition(true);
-    if (isLast) post({ type: 'complete' });
+    if (isLast) {
+      streamingDone = true;
+      post({ type: 'complete' });
+    }
   }
 
   /**
@@ -1643,7 +1788,8 @@ ${
       }
     } catch (e) {
       // A single unreadable image must not take the book down.
-      post({ type: 'error', message: 'image: ' + String(e) });
+      // One image is never worth the document: warn, and leave it empty.
+      post({ type: 'warn', message: 'image: ' + String(e) });
     }
   }
 

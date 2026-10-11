@@ -1,10 +1,9 @@
 import { useEffect } from 'react'
-import { AppState } from 'react-native'
+import { Alert, AppState } from 'react-native'
 
-import { flushLibrarySave } from '../storage/library'
+import { flushLibrarySave, onSaveHealthChange } from '../storage/library'
 import { clearPrepared } from '../renderers/webview/prepareCache'
 import { releaseAllArchives } from '../renderers/webview/offload'
-import { usePendingRemoval } from '../store/pendingRemoval'
 
 /**
  * Process-level shutdown handling.
@@ -48,12 +47,21 @@ export function useAppLifecycle(): void {
       if (next !== 'background' && next !== 'inactive') return
 
       /*
-       * Order matters. `commitAll` mutates the library — it drops removed
-       * entries from the index — so it has to run before the index is written,
-       * or the flush persists a library that still contains files the user
-       * deleted and the removal is lost.
+       * Pending removals are deliberately **not** committed here
+       * ([AUDIT4 E4](../../AUDIT4.md)).
+       *
+       * They used to be, on the reasoning that a kill in the background would
+       * otherwise lose them. It does not: every queued removal is already in
+       * the MMKV marker, and `resumeInterrupted` finishes it on the next launch
+       * — with the file hidden from the first frame. Committing here bought
+       * nothing and cost the undo, because opening the system file picker or
+       * the share sheet backgrounds the app: "delete, then tap Add files" threw
+       * away the five seconds the user had to change their mind. The undo
+       * timers keep running, so a removal still commits on schedule.
+       *
+       * The flush stays. Pending files are still in the library until they
+       * commit, so the index it writes is the correct one either way.
        */
-      usePendingRemoval.getState().commitAll()
       flushLibrarySave()
 
       // Reparsing on return costs a second; being killed loses the user's
@@ -66,5 +74,26 @@ export function useAppLifecycle(): void {
     })
 
     return () => sub.remove()
+  }, [])
+
+  /*
+   * Say so, once, when the library stops saving ([AUDIT4 C1](../../AUDIT4.md)).
+   *
+   * Saving used to fail silently: the library looked right in memory all
+   * session, and everything since the last good save was gone on the next
+   * launch. Once per session, because a dialog per failed debounce would be
+   * unusable; the save keeps retrying underneath either way, and a recovery is
+   * silent.
+   */
+  useEffect(() => {
+    let warned = false
+    return onSaveHealthChange((failing) => {
+      if (!failing || warned) return
+      warned = true
+      Alert.alert(
+        'Changes aren’t being saved',
+        'StackRead couldn’t save your library. It will keep trying. Back up your library from the ⋯ menu to be safe, and restart the app if this continues.',
+      )
+    })
   }, [])
 }

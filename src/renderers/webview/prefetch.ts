@@ -7,6 +7,7 @@ import { isWebViewFormat } from '../types'
 import { prepareFile } from './prepare'
 import { hasPrepared, setPrepared, setPinned } from './prepareCache'
 import { writePrepared } from './diskCache'
+import { hasPrefetchFailed, notePrefetchFailure } from './prefetchState'
 
 /**
  * Warms the prepared-document cache for files near the one being read.
@@ -77,8 +78,8 @@ let busy = false
  */
 let generation = 0
 
-/** Files that failed to prepare, so a broken file is not retried forever. */
-const failed = new Set<string>()
+// The failure memo lives in `prefetchState.ts`, which imports nothing — see
+// there for why it cannot live here.
 
 /**
  * Queues background preparation of the files around `index` in `files`.
@@ -114,7 +115,7 @@ export function prefetchAround(files: FileEntry[], index: number): void {
       // PDFs and images are drawn natively from disk, so there is no prepared
       // string for them to cache and nothing for a prefetch to do.
       if (!isWebViewFormat(file.format)) continue
-      if (hasPrepared(file.id) || failed.has(file.id)) continue
+      if (hasPrepared(file.id) || hasPrefetchFailed(file.id)) continue
       targets.push(file)
     }
   }
@@ -151,7 +152,7 @@ export function prefetchAround(files: FileEntry[], index: number): void {
         // A file that cannot be prepared is remembered as such rather than
         // retried on every page turn. Opening it directly still surfaces the
         // real error through the renderer.
-        failed.add(file.id)
+        notePrefetchFailure(file.id)
       } finally {
         busy = false
       }
@@ -179,19 +180,4 @@ export function cancelPrefetch(): void {
   setPinned([])
 }
 
-/**
- * Forgets that one file failed to prepare, so it is tried again.
- *
- * The memo exists so a broken file is not reparsed on every page turn. That is
- * right while the bytes stay the same — and wrong the moment they do not, which
- * is exactly what removing and re-importing a file, or restoring a backup over
- * it, does. Both reuse ids.
- */
-export function forgetPrefetchFailure(fileId: string): void {
-  failed.delete(fileId)
-}
-
-/** Clears the failure memo, so a re-imported file gets another chance. */
-export function resetPrefetchFailures(): void {
-  failed.clear()
-}
+// `forgetPrefetchFailure` and `resetPrefetchFailures` moved to `prefetchState.ts`.

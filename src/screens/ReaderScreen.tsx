@@ -270,7 +270,9 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
 
   // Desktop flushes the index on reader close and on group switch. Same here.
   useEffect(() => {
-    return () => flushLibrarySave()
+    return () => {
+      flushLibrarySave()
+    }
   }, [])
 
   const switchGroup = useCallback(

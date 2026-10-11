@@ -1,3 +1,5 @@
+import { strFromU8 } from 'fflate'
+
 /**
  * The first few lines of a document, for a card that would otherwise show only
  * a format badge.
@@ -137,3 +139,52 @@ export function snippetFrom(raw: string, format: SnippetFormat): string | null {
 
 /** How many bytes a caller should read before calling `snippetFrom`. */
 export const SNIPPET_READ_BYTES = READ_BYTES
+
+/**
+ * Decodes the first bytes of a text file.
+ *
+ * The caller reads a fixed number of bytes rather than the whole file
+ * ([AUDIT4 A7](../../AUDIT4.md)), so the read can end in the middle of a
+ * multi-byte character. fflate's UTF-8 decoder throws on an incomplete sequence,
+ * so one cut short at the end is dropped first. A file that is not UTF-8 at all
+ * (Windows-1252 notes, Latin-1 logs) decodes as Latin-1 rather than producing
+ * nothing — a preview with an odd accent is better than a badge.
+ */
+export function decodePrefix(bytes: Uint8Array): string {
+  let end = bytes.length
+
+  // Walk back over continuation bytes (10xxxxxx) to the start of the last
+  // sequence, then drop it if the read did not reach its end.
+  let lead = end - 1
+  let continuation = 0
+  while (lead >= 0 && continuation < 3 && (bytes[lead] & 0xc0) === 0x80) {
+    lead--
+    continuation++
+  }
+  if (lead >= 0 && bytes[lead] >= 0xc0) {
+    const length = bytes[lead] >= 0xf0 ? 4 : bytes[lead] >= 0xe0 ? 3 : 2
+    if (end - lead < length) end = lead
+  }
+
+  const head = bytes.subarray(0, end)
+  // Validated explicitly rather than by catching: fflate decodes leniently
+  // where a `TextDecoder` exists and strictly where it does not, so relying on
+  // a throw would give different previews on different runtimes.
+  return strFromU8(head, !isUtf8(head))
+}
+
+/** True when `bytes` is well-formed UTF-8 (no overlong or surrogate checks needed for a preview). */
+function isUtf8(bytes: Uint8Array): boolean {
+  let i = 0
+  while (i < bytes.length) {
+    const b = bytes[i]
+    const extra = b < 0x80 ? 0 : b >= 0xc2 && b < 0xe0 ? 1 : b >= 0xe0 && b < 0xf0 ? 2 : b >= 0xf0 && b < 0xf5 ? 3 : -1
+    // An invalid lead byte, or a sequence that runs past the end.
+    if (extra < 0 || i + extra > bytes.length - 1) return false
+    for (let k = 1; k <= extra; k++) {
+      if ((bytes[i + k] & 0xc0) !== 0x80) return false
+    }
+    i += extra + 1
+  }
+  return true
+}

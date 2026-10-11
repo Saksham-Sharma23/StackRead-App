@@ -71,11 +71,21 @@ test('escapeHtml covers every character that can break out of the preview', () =
 })
 
 test('the archive text branch still escapes rather than sanitises', () => {
+  /*
+   * The branch now tests `previewText.has(p)`, a set chosen from declared sizes
+   * before anything is decompressed (AUDIT4 A11). The property is unchanged:
+   * whatever is previewed as text is escaped. So the selection is pinned to
+   * `TEXT_RE`, and the branch to `escapeHtml`, separately.
+   */
   const branch = prepare.slice(
-    prepare.indexOf('if (entry && TEXT_RE.test(p)'),
+    prepare.indexOf('if (entry && previewText.has(p))'),
     prepare.indexOf('rows.push(`<div class="sr-chapter">${head}</div>`)'),
   )
   assert.ok(branch.length > 0, 'the text-preview branch must still exist')
+  assert.ok(
+    /TEXT_RE\.test\(p\) && size <= MAX_TEXT_PREVIEW_BYTES[\s\S]{0,200}previewText\.add\(p\)/.test(prepare),
+    'only TEXT_RE entries may be chosen for an inline text preview',
+  )
 
   assert.ok(
     branch.includes('escapeHtml(strFromU8(entry))'),

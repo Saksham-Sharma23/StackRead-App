@@ -58,6 +58,14 @@ import type { LibraryDiff } from './libraryDiff'
 const SCHEMA_VERSION = 3
 
 /**
+ * Version of the FTS index's contents, stored as meta `ftsBuilt`.
+ *
+ * A mismatch triggers a full `rebuild` on open. '1' was the first build; '2'
+ * repairs indexes corrupted by the old `INSERT OR REPLACE` upsert.
+ */
+const FTS_INDEX_VERSION = '2'
+
+/**
  * Marks that the one-time import from `library.json` has been considered.
  *
  * **This flag, not "are there any rows", is what gates the import.** Using an
@@ -220,10 +228,20 @@ export function getDb(): SQLiteDatabase {
    * is the documented way to do this and is correct to run more than once —
    * though the flag below means it normally runs once per upgrade.
    */
+  /*
+   * The marker is now '2', which forces one more rebuild on every existing
+   * install: indexes written before `applyDiff` stopped using
+   * `INSERT OR REPLACE` hold stale and duplicate entries ([AUDIT4 B7](../../AUDIT4.md)),
+   * and `rebuild` re-derives the index from the content table, discarding them.
+   * Bump it again if the index ever needs another repair.
+   */
   try {
-    if (getMetaFrom(opened, 'ftsBuilt') !== '1') {
+    if (getMetaFrom(opened, 'ftsBuilt') !== FTS_INDEX_VERSION) {
       opened.execSync("INSERT INTO files_fts (files_fts) VALUES ('rebuild')")
-      opened.runSync('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', ['ftsBuilt', '1'])
+      opened.runSync('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+        'ftsBuilt',
+        FTS_INDEX_VERSION,
+      ])
     }
   } catch (err) {
     // A search index that cannot be built must not stop the library opening.
@@ -449,11 +467,32 @@ export function applyDiff(diff: LibraryDiff): void {
       )
     }
 
+    /*
+     * A true upsert, not `INSERT OR REPLACE` ([AUDIT4 B7](../../AUDIT4.md)).
+     *
+     * REPLACE resolves the conflict by deleting the old row and inserting a new
+     * one — and SQLite fires DELETE triggers for that only when
+     * `recursive_triggers` is on, which it is not here. The UPDATE trigger does
+     * not fire either, since nothing was updated. So every rename, move,
+     * reorder and cover capture added a fresh FTS entry and left the old one
+     * behind: renamed files kept matching their old names, results could
+     * duplicate, and the mismatched `'delete'` commands that followed are how
+     * an external-content FTS5 index ends up corrupt.
+     *
+     * `ON CONFLICT … DO UPDATE` updates the row in place, keeps its rowid, and
+     * fires `files_fts_update`, which is exactly the trigger written for this.
+     */
     for (const file of diff.filesUpserted) {
       database.runSync(
-        'INSERT OR REPLACE INTO files' +
+        'INSERT INTO files' +
           ' (id, name, storedName, format, groupId, orderInGroup, lastScroll, lastProgress, thumb, thumbhash, size, addedAt)' +
-          ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)' +
+          ' ON CONFLICT(id) DO UPDATE SET' +
+          ' name = excluded.name, storedName = excluded.storedName, format = excluded.format,' +
+          ' groupId = excluded.groupId, orderInGroup = excluded.orderInGroup,' +
+          ' lastScroll = excluded.lastScroll, lastProgress = excluded.lastProgress,' +
+          ' thumb = excluded.thumb, thumbhash = excluded.thumbhash, size = excluded.size,' +
+          ' addedAt = excluded.addedAt',
         [
           file.id,
           file.name,

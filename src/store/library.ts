@@ -491,3 +491,14 @@ export const useLibrary = create<LibraryState>((set, get) => ({
       }
     }),
 }))
+
+/**
+ * The library as it is in memory right now, in the shape the index stores.
+ *
+ * For a backup ([AUDIT4 C4](../../AUDIT4.md)): memory is ahead of the database
+ * by up to one debounce always, and by everything since the last good save when
+ * saving is failing — exactly when backing up matters most.
+ */
+export function snapshotLibrary(): Library {
+  return toLibrary(useLibrary.getState())
+}

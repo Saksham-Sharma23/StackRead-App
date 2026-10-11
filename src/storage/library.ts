@@ -7,7 +7,18 @@ import {
   readLibrary,
   replaceAll,
 } from './db'
-import { diffLibrary, isEmptyDiff, shadowOf, EMPTY_SHADOW, type LibraryShadow } from './libraryDiff'
+import {
+  diffLibrary,
+  hashFile,
+  hashGroup,
+  isEmptyDiff,
+  shadowOf,
+  EMPTY_DIFF,
+  EMPTY_SHADOW,
+  type LibraryDiff,
+  type LibraryShadow,
+} from './libraryDiff'
+import { storage, LAST_FULL_SAVE_KEY } from './mmkv'
 
 /**
  * Loads and saves the library index.
@@ -165,22 +176,119 @@ async function readIndex(file: typeof INDEX_FILE): Promise<Library | null> {
  * shadow is left untouched on failure so the same rows are attempted again on
  * the next save.
  */
-export function saveLibraryNow(library: Library): void {
+export function saveLibraryNow(library: Library): boolean {
   const diff = diffLibrary(shadow, library)
-  if (isEmptyDiff(diff)) return
+  if (isEmptyDiff(diff)) return true
 
   try {
     applyDiff(diff)
   } catch (err) {
-    // Deliberately not rethrown: a save runs from a debounce timer and from the
-    // backgrounding path, where there is no caller to handle it. Logged as an
-    // error rather than a warning, and the shadow is left alone so the next
-    // save retries rather than assuming this one landed.
-    console.error('[stackread] failed to save library index', err)
-    return
+    /*
+     * One bad row must not take every other row down with it
+     * ([AUDIT4 C1](../../AUDIT4.md)).
+     *
+     * `applyDiff` is one transaction, so a single row SQLite refuses — a
+     * `format` of undefined in a NOT NULL column, say — rolled back the whole
+     * batch. And because the shadow is left unchanged on failure, that row was
+     * in every later diff too: **every save failed for the rest of the
+     * session**, silently, while the library looked fine in memory. Retrying
+     * row by row lets everything else land; the rows that still fail stay out
+     * of the shadow and are retried each save.
+     */
+    console.error('[stackread] library save failed as a batch; retrying row by row', err)
+    const failed = applyRowByRow(diff)
+    noteSaveOutcome(failed === 0)
+    return failed === 0
   }
 
   shadow = shadowOf(library)
+  noteSaveOutcome(true)
+  return true
+}
+
+/**
+ * Applies a diff one row per transaction, advancing the shadow only for rows
+ * that landed. Returns how many rows failed.
+ *
+ * Deletes before upserts, matching `applyDiff`, so a file moved between groups
+ * in the same batch cannot collide with itself.
+ */
+function applyRowByRow(diff: LibraryDiff): number {
+  const next: LibraryShadow = { groups: new Map(shadow.groups), files: new Map(shadow.files) }
+  let failed = 0
+
+  const attempt = (one: Partial<LibraryDiff>, onSuccess: () => void, id: string): void => {
+    try {
+      applyDiff({ ...EMPTY_DIFF, ...one })
+      onSuccess()
+    } catch (err) {
+      failed += 1
+      // The id, never the name: AUDIT3 §2.4.
+      console.error(`[stackread] library row ${id} could not be saved; isolated and retried next save`, err)
+    }
+  }
+
+  for (const id of diff.fileIdsDeleted) {
+    attempt({ fileIdsDeleted: [id] }, () => next.files.delete(id), id)
+  }
+  for (const id of diff.groupIdsDeleted) {
+    attempt({ groupIdsDeleted: [id] }, () => next.groups.delete(id), id)
+  }
+  for (const group of diff.groupsUpserted) {
+    attempt({ groupsUpserted: [group] }, () => next.groups.set(group.id, hashGroup(group)), group.id)
+  }
+  for (const file of diff.filesUpserted) {
+    attempt({ filesUpserted: [file] }, () => next.files.set(file.id, hashFile(file)), file.id)
+  }
+
+  shadow = next
+  return failed
+}
+
+/*
+ * ---- save health -----------------------------------------------------------
+ *
+ * Two consumers need to know whether saving works:
+ *
+ *  - `pruneOrphans` must never delete a file the index might not have recorded
+ *    yet. It reads `lastFullSaveAt` and leaves alone anything newer.
+ *  - The user, once. A library that cannot be saved will lose everything since
+ *    the last good save on the next launch; saying nothing is how DETAIL.md
+ *    §6.3 happened.
+ */
+
+let consecutiveFailures = 0
+const healthListeners = new Set<(failing: boolean) => void>()
+
+function noteSaveOutcome(ok: boolean): void {
+  if (ok) {
+    // Only a save with *nothing* left behind proves the index matches memory.
+    // A partial one must not advance this, or the prune would treat the
+    // isolated rows' files as orphans.
+    storage.set(LAST_FULL_SAVE_KEY, Date.now())
+    if (consecutiveFailures > 0) {
+      consecutiveFailures = 0
+      for (const listener of healthListeners) listener(false)
+    }
+    return
+  }
+  consecutiveFailures += 1
+  if (consecutiveFailures === 1) {
+    for (const listener of healthListeners) listener(true)
+  }
+}
+
+/** When the index last matched memory completely, or 0 if never on this install. */
+export function lastFullSaveAt(): number {
+  return storage.getNumber(LAST_FULL_SAVE_KEY) ?? 0
+}
+
+/** Called with `true` when saving starts failing and `false` when it recovers. */
+export function onSaveHealthChange(listener: (failing: boolean) => void): () => void {
+  healthListeners.add(listener)
+  return () => {
+    healthListeners.delete(listener)
+  }
 }
 
 /** Coalesces rapid mutations into a single write. */
@@ -193,9 +301,21 @@ export function scheduleSave(build: () => Library): void {
     if (pending) {
       const build = pending
       pending = null
-      saveLibraryNow(build())
+      if (!saveLibraryNow(build())) retryLater(build)
     }
   }, SAVE_DEBOUNCE_MS)
+}
+
+/**
+ * Keeps a failed save's state queued, unless something newer already is.
+ *
+ * The thunk used to be dropped once tried, so after a failure nothing was
+ * retried until the user changed something else — not even by the
+ * backgrounding flush, which found nothing pending. Now the last state stays
+ * queued, and every flush (reader close, backgrounding) tries it again.
+ */
+function retryLater(build: () => Library): void {
+  if (!pending) pending = build
 }
 
 /**
@@ -204,20 +324,25 @@ export function scheduleSave(build: () => Library): void {
  * Desktop calls this on reader close, group switch and quit. The mobile
  * equivalents are app backgrounding and reader dismissal — a phone can have the
  * process killed at any moment, so never leave the index only in memory.
+ *
+ * Returns true when the index now matches memory — nothing was pending, or the
+ * pending write landed in full. Callers about to do something irreversible on
+ * the strength of a save (deleting a removed file's bytes) must check it.
  */
-export function flushLibrarySave(): void {
+export function flushLibrarySave(): boolean {
   if (saveTimer) {
     clearTimeout(saveTimer)
     saveTimer = null
   }
-  if (pending) {
-    // Cleared before the flatten, not after: `saveLibraryNow` can throw, and a
-    // thunk left in place would be re-run by the next flush against state that
-    // has since moved on.
-    const build = pending
-    pending = null
-    saveLibraryNow(build())
-  }
+  if (!pending) return true
+
+  // Taken before saving so a mutation made during the save queues on its own;
+  // put back only if the save failed and nothing newer arrived meanwhile.
+  const build = pending
+  pending = null
+  const saved = saveLibraryNow(build())
+  if (!saved) retryLater(build)
+  return saved
 }
 
 /**
@@ -231,6 +356,7 @@ export function flushLibrarySave(): void {
 export function replaceLibrary(library: Library): void {
   replaceAll(library)
   shadow = shadowOf(library)
+  noteSaveOutcome(true)
   // A restore invalidates anything the debounce was about to write.
   if (saveTimer) {
     clearTimeout(saveTimer)

@@ -32,7 +32,7 @@ const THEME = {
 
 function viewerScript(): string {
   const html = buildViewerHtml(THEME, 0)
-  const match = html.match(/<script>([\s\S]*?)<\/script>/)
+  const match = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)
   assert.ok(match, 'viewer HTML contains no script block')
   return match[1]
 }
@@ -466,10 +466,62 @@ test('the restore path prefers the anchor and keeps the pixel fallback', () => {
     /if \(typeof payload\.anchor === 'number' && payload\.anchor > 0\) \{/.test(render),
     'the anchor branch must be a live condition on the payload',
   )
-  assert.ok(
-    /if \(scrollToAnchor\(payload\.anchor\)\) \{[\s\S]{0,200}?return;/.test(render),
-    'a successful anchor restore must return rather than also applying the pixel offset',
+  /*
+   * Return, but say `ready` first. The window this used to allow was 200
+   * characters ending at a bare `return;` — which pinned the bug where this
+   * path never posted `ready`, so a reopened document kept its loading cover
+   * forever and never streamed its remainder (AUDIT4 B1).
+   */
+  const anchorBranch = render.slice(
+    render.indexOf('if (scrollToAnchor(payload.anchor)) {'),
+    render.indexOf('var target = payload.scroll'),
   )
+  assert.ok(
+    /post\(\{ type: 'ready' \}\);\s*return;/.test(anchorBranch),
+    'a successful anchor restore must post ready, then return rather than also applying the pixel offset',
+  )
+})
+
+test('every successful render path tells the host it is ready', () => {
+  /*
+   * The host lifts the loading cover, streams the rest of the document and
+   * starts delivering seek, search and settings only on `ready`. A path through
+   * render() that returns without it leaves the reader stuck on the cover.
+   * So: inside render's try block, every `return;` is preceded by a ready post,
+   * and the fall-through end posts one too.
+   */
+  const src = source()
+  const render = src.slice(src.indexOf('function render(payload)'), src.indexOf('function handle(raw)'))
+  let body = render
+    .slice(render.indexOf('try {'), render.lastIndexOf('} catch (e) {'))
+    // Comments first: prose mentioning a "function" would confuse the cut below.
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+  assert.ok(body.length > 0, 'render must have a try block')
+
+  // A `return` inside a nested function (the scroll-settle retry loop, the
+  // image listeners) leaves that function, not render — cut those bodies out.
+  for (;;) {
+    const at = body.indexOf('function', 1)
+    if (at < 0) break
+    const open = body.indexOf('{', at)
+    let depth = 0
+    let end = open
+    for (; end < body.length; end++) {
+      if (body[end] === '{') depth++
+      else if (body[end] === '}' && --depth === 0) break
+    }
+    body = body.slice(0, at) + body.slice(end + 1)
+  }
+
+  for (const m of body.matchAll(/return;/g)) {
+    const before = body.slice(Math.max(0, (m.index ?? 0) - 60), m.index)
+    assert.ok(
+      before.includes("post({ type: 'ready' });"),
+      `a return inside render must post ready first:\n${before}return;`,
+    )
+  }
+  assert.ok(/post\(\{ type: 'ready' \}\);\s*$/.test(body.trimEnd()), 'the normal path must end by posting ready')
 })
 
 test('an unreachable anchor is parked for streaming content', () => {
