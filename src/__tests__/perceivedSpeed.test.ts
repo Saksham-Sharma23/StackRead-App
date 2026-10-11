@@ -392,7 +392,9 @@ test('the PDF cover factory keeps one document live at a time', () => {
   // The reader takes the same lease, so a capture and an open never overlap.
   const reader = source('renderers/PdfRenderer.tsx')
   assert.ok(/acquirePdfium\(`reader:/.test(reader))
-  assert.ok(/\{leased && <AnimatedPdf/.test(reader), 'the reader must not mount pdfium before it holds the lease')
+  // A plain `Pdf` now, not `AnimatedPdf`: animated props on the view were full
+  // document reloads (see PdfRenderer's header). The gate is what this pins.
+  assert.ok(/\{leased && \(\s*<Pdf\b/.test(reader), 'the reader must not mount pdfium before it holds the lease')
 })
 
 test('the PDF cover factory stands down while the reader is open', () => {

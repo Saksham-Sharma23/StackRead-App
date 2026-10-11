@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { InteractionManager, StyleSheet, View } from 'react-native'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { InteractionManager, StyleSheet, View, useWindowDimensions } from 'react-native'
 import Pdf from 'react-native-pdf'
 
 import type { FileEntry } from '../types'
@@ -12,6 +12,8 @@ import {
   markThumbnailFailed,
 } from '../storage/thumbs'
 import { acquirePdfium, type PdfiumLease } from '../storage/pdfiumLease'
+import { savePreview } from '../storage/pdfPreview'
+import { useTheme } from '../ui/theme'
 import { useLibrary } from '../store/library'
 
 /**
@@ -55,9 +57,17 @@ import { useLibrary } from '../store/library'
  * and a collapsed view has no native handle to capture.
  */
 
-/** Matches the card, so the captured page is downscaled once rather than twice. */
-const CAPTURE_WIDTH = 320
-const CAPTURE_HEIGHT = 420
+/*
+ * The stage is the size of the window, not of a card.
+ *
+ * It used to be 320×420, which made a card cover and nothing else. At window
+ * size, laid out exactly as the reader lays a PDF out — fit to width, page 1 at
+ * the top, the same spacing and gutter — the one capture is two things: the
+ * card cover (cropped to the page, then downscaled) and the instant-open
+ * preview the reader shows the moment the file is tapped
+ * (`storage/pdfPreview`). Most PDFs are opened first at page 1, so most first
+ * opens are now instant too, not only reopens.
+ */
 
 /**
  * How long to let pdfium paint before photographing.
@@ -144,6 +154,13 @@ interface Props {
 type Outcome = 'done' | 'failed' | 'abandoned'
 
 export function PdfCoverFactory({ fileIds, enabled, visibleGroups }: Props) {
+  const theme = useTheme()
+  const window = useWindowDimensions()
+  /*
+   * The frame size, fixed while a capture is in flight so a rotation mid-load
+   * cannot resize the document (a reload) or mislabel the preview.
+   */
+  const [stage, setStage] = useState({ width: window.width, height: window.height })
   const [target, setTarget] = useState<FileEntry | null>(null)
   const viewRef = useRef<View>(null)
 
@@ -157,6 +174,8 @@ export function PdfCoverFactory({ fileIds, enabled, visibleGroups }: Props) {
   /** Read inside async work, which must see the current value, not its closure's. */
   const enabledRef = useRef(enabled)
   enabledRef.current = enabled
+  const windowRef = useRef(window)
+  windowRef.current = window
 
   /** The capture in flight should be skipped rather than taken. */
   const abandonRef = useRef(false)
@@ -233,6 +252,8 @@ export function PdfCoverFactory({ fileIds, enabled, visibleGroups }: Props) {
         beginThumbnailAttempt(next.id)
         abandonRef.current = false
         finishedRef.current = false
+        // Taken now, at the start of the capture, and held for its duration.
+        setStage({ width: windowRef.current.width, height: windowRef.current.height })
         setTarget(next)
       })
     })
@@ -298,7 +319,7 @@ export function PdfCoverFactory({ fileIds, enabled, visibleGroups }: Props) {
     }
   }, [target, finish])
 
-  const handleLoaded = useCallback(() => {
+  const handleLoaded = useCallback((_pages: number, _path: string, pageSize: { width: number; height: number }) => {
     const file = target
     if (!file) return
     if (timerRef.current) clearTimeout(timerRef.current)
@@ -322,44 +343,75 @@ export function PdfCoverFactory({ fileIds, enabled, visibleGroups }: Props) {
 
         const shot = await captureRef(viewRef, {
           format: 'jpg',
-          quality: 0.8,
+          quality: 0.85,
           result: 'tmpfile',
         })
 
-        const result = await captureFirstPage(file, shot)
+        // Page 1's share of the frame, so the card is the page, not the gutter.
+        const pageFraction =
+          pageSize.width > 0
+            ? Math.min(1, (stage.width * (pageSize.height / pageSize.width)) / stage.height)
+            : 1
+
+        const result = await captureFirstPage(file, shot, pageFraction)
         if (result) {
           useLibrary.getState().setThumb(file.id, result.thumb, result.thumbhash)
           outcome = 'done'
         }
+        // Last: `savePreview` takes ownership of the capture and deletes it.
+        savePreview(file.id, stage.width, stage.height, shot)
       } catch {
         // A cover is a nicety. A capture that threw is retried another session.
       } finally {
         finish(file, outcome)
       }
     })()
-  }, [target, finish])
+  }, [target, finish, stage])
 
   // pdfium could not open the file: a stable property of it, recorded durably.
   const handleError = useCallback(() => {
     if (target) finish(target, 'failed')
   }, [target, finish])
 
-  if (!target) return null
+  /*
+   * Memoised: in `react-native-pdf` every prop change is a full document
+   * reload (see `PdfRenderer`), so nothing handed to the view may be rebuilt
+   * per render.
+   */
+  const source = useMemo(
+    () => (target ? { uri: fileUri(target.storedName), cache: false } : null),
+    [target],
+  )
+  const renderNothing = useCallback(() => <View />, [])
+  const frame = useMemo(
+    () => ({ width: stage.width, height: stage.height, backgroundColor: theme.gutter }),
+    [stage.width, stage.height, theme.gutter],
+  )
+
+  if (!target || !source) return null
 
   return (
-    <View style={styles.stage} pointerEvents="none" collapsable={false}>
-      <View ref={viewRef} collapsable={false} style={styles.page}>
+    <View style={[styles.stage, frame]} pointerEvents="none" collapsable={false}>
+      <View ref={viewRef} collapsable={false} style={frame}>
+        {/*
+          The reader's own layout, prop for prop: fit to width, the same
+          spacing, the same gutter, full window — so this frame is the frame
+          the reader will show (`PdfRenderer`). Not `singlePage`: the reader
+          shows the top of page 2 under a short page 1, and so must this.
+        */}
         <Pdf
-          source={{ uri: fileUri(target.storedName), cache: false }}
+          source={source}
           page={1}
-          singlePage
-          // No spinner and no interaction: nothing here is ever seen.
-          renderActivityIndicator={() => <View />}
+          horizontal={false}
           enablePaging={false}
-          scale={1}
+          enableAnnotationRendering
+          fitPolicy={0}
+          spacing={14}
+          // No spinner and no interaction: nothing here is ever seen.
+          renderActivityIndicator={renderNothing}
           onLoadComplete={handleLoaded}
           onError={handleError}
-          style={styles.page}
+          style={frame}
         />
       </View>
     </View>
@@ -374,13 +426,11 @@ const styles = StyleSheet.create({
    * photograph, so it must genuinely occupy space — it simply must not occupy
    * space anyone can see.
    */
+  // Sized at render time to the window — see the note at the top of the file.
   stage: {
     position: 'absolute',
     left: -10_000,
     top: 0,
-    width: CAPTURE_WIDTH,
-    height: CAPTURE_HEIGHT,
     opacity: 1,
   },
-  page: { width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT, backgroundColor: '#fff' },
 })

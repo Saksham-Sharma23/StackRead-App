@@ -10,6 +10,7 @@ import { forgetPrefetchFailure, resetPrefetchFailures } from '../renderers/webvi
 import { forgetSize, clearSizeCache } from './files'
 import { resetThumbnailAttempt, resetAllThumbnailAttempts } from './thumbs'
 import { forgetSnippet, clearSnippets } from '../components/useSnippet'
+import { forgetPreviews, clearPreviews } from './pdfPreview'
 
 /**
  * The one place that knows when a `file.id` stops being valid.
@@ -103,6 +104,7 @@ export function forgetFileEverywhere(fileId: string): void {
   // not invalidated here serves the previous file's content after a restore,
   // because an export deliberately preserves ids.
   forgetSnippet(fileId)
+  forgetPreviews(fileId)
   /*
    * Reading position, chapters and search results for this id.
    *
@@ -146,6 +148,7 @@ export function resetAllCaches(): void {
   resetAllThumbnailAttempts()
   resetPrefetchFailures()
   clearSnippets()
+  clearPreviews()
   forgetAllScroll()
   /*
    * The two id-keyed stores, cleared wholesale.

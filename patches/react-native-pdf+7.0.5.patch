@@ -1,0 +1,42 @@
+diff --git a/node_modules/react-native-pdf/android/src/main/java/org/wonday/pdf/PdfView.java b/node_modules/react-native-pdf/android/src/main/java/org/wonday/pdf/PdfView.java
+index c3d3245..ada694e 100644
+--- a/node_modules/react-native-pdf/android/src/main/java/org/wonday/pdf/PdfView.java
++++ b/node_modules/react-native-pdf/android/src/main/java/org/wonday/pdf/PdfView.java
+@@ -339,10 +339,37 @@ public class PdfView extends PDFView implements OnPageChangeListener,OnLoadCompl
+         return pageCount;
+     }
+ 
++    /**
++     * StackRead patch: the configuration of the document currently loaded or loading.
++     *
++     * drawPdf() is posted after every prop transaction (PdfManager.onAfterUpdateTransaction)
++     * and once more by setPath, and Configurator.load() recycles the document and re-parses
++     * it from scratch each time. So any prop update - a style change, a layout commit, the
++     * initial pair of posts on mount - reloaded the whole file. For a large PDF that is seconds
++     * per reload. With this, drawPdf() reloads only when something that affects how the
++     * document is loaded has changed, or the view was recycled (detached from the window).
++     * Page changes are unaffected: setPage() jumps without a reload, as before.
++     */
++    private String loadedConfig = null;
++
+     public void drawPdf() {
+         showLog(format("drawPdf path:%s %s", this.path, this.page));
+ 
+         if (this.path != null){
++            String config = this.path + '|' + this.horizontal + '|' + this.spacing + '|'
++                + this.password + '|' + this.enableAntialiasing + '|' + this.fitPolicy + '|'
++                + this.pageSnap + '|' + this.autoSpacing + '|' + this.pageFling + '|'
++                + this.singlePage + '|' + this.scrollEnabled + '|' + this.enableDoubleTapZoom + '|'
++                + this.enableAnnotationRendering + '|' + this.enableRTL;
++            if (config.equals(this.loadedConfig) && !this.isRecycled()) {
++                // Same document, same settings, still loaded: only the zoom limits can differ.
++                this.setMinZoom(this.minScale);
++                this.setMaxZoom(this.maxScale);
++                this.setMidZoom((this.maxScale+this.minScale)/2);
++                return;
++            }
++            this.loadedConfig = config;
++
+ 
+             // set scale
+             this.setMinZoom(this.minScale);

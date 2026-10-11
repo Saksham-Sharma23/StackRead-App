@@ -311,6 +311,16 @@ export async function ensureThumbnail(entry: FileEntry): Promise<ThumbResult | n
 export async function captureFirstPage(
   entry: FileEntry,
   renderedUri: string,
+  /**
+   * The share of the capture's height that is page 1, from the top.
+   *
+   * The reader and the cover factory now capture a full-window frame — the
+   * same frame the instant-open preview shows (`storage/pdfPreview`) — in
+   * which page 1 is fit to width at the top and the gutter, or page 2, fills
+   * the rest. The card wants the page alone, so it is cropped to this before
+   * the downscale. 1 means "use the whole image".
+   */
+  pageFraction = 1,
 ): Promise<ThumbResult | null> {
   if (entry.thumb) return { thumb: entry.thumb, thumbhash: entry.thumbhash }
   if (attempted.has(entry.id)) return null
@@ -326,6 +336,13 @@ export async function captureFirstPage(
   await acquire()
   try {
     const ctx = ImageManipulator.manipulate(renderedUri)
+    if (pageFraction > 0 && pageFraction < 0.999) {
+      // The crop is in pixels, and the capture's pixel size depends on the
+      // device's density — so it is measured rather than computed.
+      const probe = await ImageManipulator.manipulate(renderedUri).renderAsync()
+      const height = Math.max(1, Math.round(probe.height * pageFraction))
+      ctx.crop({ originX: 0, originY: 0, width: probe.width, height })
+    }
     ctx.resize({ width: THUMB_WIDTH })
     const rendered = await ctx.renderAsync()
     const saved = await rendered.saveAsync({ compress: 0.7, format: SaveFormat.JPEG })
