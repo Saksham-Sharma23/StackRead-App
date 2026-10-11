@@ -2,7 +2,7 @@
   "expo": {
     "name": "StackRead",
     "slug": "stackread",
-    "version": "0.1.0",
+    "version": "1.5.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "scheme": "stackread",

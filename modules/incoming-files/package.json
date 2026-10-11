@@ -1,0 +1,7 @@
+{
+  "name": "incoming-files",
+  "version": "1.0.0",
+  "description": "Files handed to StackRead by other apps: Open with (VIEW) and Share (SEND)",
+  "main": "src/index.ts",
+  "private": true
+}

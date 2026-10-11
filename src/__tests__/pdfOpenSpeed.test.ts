@@ -66,8 +66,20 @@ test('the native view reloads only when the document or its load settings change
   const patch = source('../patches/react-native-pdf+7.0.5.patch')
   assert.ok(patch.includes('PdfView.java'), 'the patch targets the native view')
   assert.ok(/if \(config\.equals\(this\.loadedConfig\) && !this\.isRecycled\(\)\)/.test(patch))
-  // The patch is only the source change, not stray build output.
-  assert.equal(patch.match(/^diff --git /gm)?.length, 1, 'exactly one file patched')
+  /*
+   * The patch is only source changes, never stray build output (`android/build`
+   * once leaked in from a compile). Was "exactly one file"; the exact-position
+   * restore (pdfResume.test.ts) legitimately added the spec, manager and JS
+   * files, so the property pinned is now the list itself.
+   */
+  const files = [...patch.matchAll(/^diff --git a\/node_modules\/react-native-pdf\/(\S+)/gm)].map((m) => m[1]).sort()
+  assert.deepEqual(files, [
+    'android/src/main/java/org/wonday/pdf/PdfManager.java',
+    'android/src/main/java/org/wonday/pdf/PdfView.java',
+    'fabric/RNPDFPdfNativeComponent.js',
+    'index.d.ts',
+    'index.js',
+  ])
 
   const pkg = JSON.parse(source('../package.json'))
   assert.equal(pkg.scripts.postinstall, 'patch-package', 'npm ci (and CI) must apply it')
@@ -102,7 +114,9 @@ test('the preview is only shown for an open that lands on page 1, at the size it
   assert.ok(settle.includes('FIRST_PAGES_MS'))
 
   const store = source('storage/pdfPreview.ts')
-  assert.ok(store.includes('`${fileId}.w${Math.round(width)}h${Math.round(height)}.jpg`'), 'keyed by window size')
+  // Every name starts with the file and the window size it was taken at.
+  assert.ok(store.includes('`${fileId}.w${Math.round(width)}h${Math.round(height)}`'), 'keyed by window size')
+  assert.ok(store.includes('`${sizeTag(fileId, width, height)}.jpg`'))
   assert.ok(/new Directory\(Paths\.cache, 'stackread-pdf-previews'\)/.test(store), 'disposable, outside the library')
 
   const lifecycle = source('storage/lifecycle.ts')

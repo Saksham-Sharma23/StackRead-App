@@ -165,6 +165,25 @@ and a row is inserted. Covers are rasterised lazily by
 [PdfCoverFactory](src/components/PdfCoverFactory.tsx), one at a time, capped at
 40/session, prioritising groups on screen.
 
+**Open with / Share.** Other apps can hand StackRead a file (intent filters in
+[app.config.js](app.config.js), read by `modules/incoming-files`). It is copied
+on a native background thread into an "Opened files" group — remembered by id,
+so it can be renamed — and opened; a file already present (same name and size)
+is opened instead of duplicated. Only `content://` URIs are accepted, and the
+copy can only land inside the app's files directory. See
+[storage/incoming.ts](src/storage/incoming.ts).
+
+**Import a folder or ZIP as a group.** "+ New group" offers both. Subfolders
+are flattened into one group in natural order (`vol2` before `vol10`); the
+group is named after the folder or ZIP, with " (2)" on a clash. Everything is
+copied first and the group added last, so a cancel or failure leaves the
+library untouched. ZIPs stream through
+[zipUnpack.ts](src/storage/zipUnpack.ts) — free of device APIs so the tests run
+it on real archives — bounded by free space, 1,000 files per import, and names
+reduced to their last segment (`..` entries are dropped). A plain "Add files"
+still adds a `.zip` as one file. See
+[storage/bulkImport.ts](src/storage/bulkImport.ts).
+
 **Read.** Scroll to read, swipe for the next file in the row. Position is
 written to MMKV on settle and to the index only on export.
 
@@ -356,8 +375,9 @@ src/
                      library · libraryDiff · lifecycle · formats
   store/             Zustand stores; scroll is MMKV, not React
   ui/                theme · motion · perf · openTransition
-  __tests__/         pure logic, Node's own runner — 489 tests
+  __tests__/         pure logic, Node's own runner — 528 tests
 modules/pdf-text/    Expo module bridging pdfium text + search
+modules/incoming-files/  Expo module: files from "Open with" and "Share"
 scripts/             tune-gradle · setup-signing · release-check · dev tools
 .github/workflows/   android-release.yml — CI release build
 ```
@@ -410,11 +430,19 @@ lines:
 R0–R6 of [TASKS2.md](TASKS2.md) are complete. [AUDIT4.md](AUDIT4.md) — crash
 paths, data integrity, security, release — has every A–E finding fixed and
 recorded in its status table; **none of it is yet verified on a device**, and
-its device checklist is the next step. 489 tests pass.
+its device checklist is the next step. 528 tests pass.
 
 Still open from TASKS2 **R7 (ship readiness)**: crash reporting (the hook is
-`ui/crashLog.ts`, which already scrubs paths) and `versionCode` automation.
-The root error boundary R7 asked for now exists (AUDIT4 A10).
+`ui/crashLog.ts`, which already scrubs paths). The root error boundary R7
+asked for now exists (AUDIT4 A10), and `versionCode` is automated (R7-3): it
+is the commit count, from `scripts/versioning.cjs` — never edit it by hand,
+and never rewrite `main`'s history without raising the floor in `app.json`.
+
+**`react-native-pdf` is patched** (`patches/`, applied by `postinstall`): an
+idempotent `drawPdf()`, and an exact-position restore (`initialPositionOffset`
+prop, `onPositionChanged` event) that the instant mid-document reopen depends
+on. Upgrading the library means re-making the patch; the native parts need a
+native rebuild.
 
 Two rules AUDIT4 added that are easy to undo by accident:
 

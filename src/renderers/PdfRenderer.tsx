@@ -14,8 +14,15 @@ import Pdf, { type PdfRef } from 'react-native-pdf'
 import { LoadingCover } from '../components/LoadingCover'
 import { fileUri } from '../storage/paths'
 import { captureFirstPage } from '../storage/thumbs'
-import { existingPreview, savePreview } from '../storage/pdfPreview'
-import { getScroll, setScroll, setProgress } from '../store/scroll'
+import {
+  discardCapture,
+  existingPreview,
+  existingResumePreview,
+  savePreview,
+  saveResumePreview,
+} from '../storage/pdfPreview'
+import { getScroll, setScroll, setProgress, getPdfPosition, setPdfPosition } from '../store/scroll'
+import { restorablePdfOffset, samePdfPosition, type PdfPosition } from './pdfPosition'
 import { useLibrary } from '../store/library'
 import { usePageNav } from '../store/pageNav'
 import { useSearch } from '../store/search'
@@ -31,8 +38,11 @@ import type { RendererProps } from './types'
  * pager's zoom-lock both need APIs that library does not expose: page jumps and
  * `onPageChanged` for the stepper, and `onScaleChanged` for the lock.
  *
- * Position is remembered as a **page number**, not a pixel offset — pixels are
- * meaningless across rotations and zoom levels for a paged document.
+ * Position is remembered as a **page number** — portable, backed up, valid at
+ * any window size — refined on this device by the view's exact position
+ * (`renderers/pdfPosition`), which restores the same pixels when the window is
+ * the same size. That exactness is what lets a reopen mid-document show the
+ * frame it left instantly (the resume frame, below).
  *
  * ## Why every prop handed to the native view is fixed for its lifetime
  *
@@ -73,6 +83,18 @@ const FIRST_PAGES_MS = 600
 /** How long the instant-open preview takes to give way to the live document. */
 const PREVIEW_FADE_MS = 180
 
+/**
+ * How long the reader must stay put before the frame is captured as the
+ * resume frame.
+ *
+ * The native view already waits 250ms for scrolling to stop before it reports
+ * a position; this waits further for *reading*, so a capture lands while the
+ * reader is looking at a page and not between two flicks — each one is a
+ * full-screen draw on the UI thread, never worth spending on a frame that is
+ * about to be replaced.
+ */
+const RESUME_IDLE_MS = 1200
+
 export function PdfRenderer({ file, active, onScaleChange }: RendererProps) {
   const theme = useTheme()
   const window = useWindowDimensions()
@@ -82,6 +104,27 @@ export function PdfRenderer({ file, active, onScaleChange }: RendererProps) {
 
   // Restored once, on mount. Re-reading later would fight the user's scrolling.
   const initialPage = useRef(Math.max(1, Math.round(getScroll(file.id)) || 1)).current
+
+  /*
+   * The exact position to restore within that page, when it is trustworthy
+   * (`restorablePdfOffset`), else null and the page alone restores. Handed to
+   * the native view once; like `page`, it is only ever the initial value.
+   */
+  const frameAtMount = useRef({ width: window.width, height: window.height }).current
+  const storedPosition = useRef(getPdfPosition(file.id)).current
+  const initialOffset = useRef(
+    restorablePdfOffset(storedPosition, initialPage, frameAtMount.width, frameAtMount.height),
+  ).current
+
+  /*
+   * Read through refs by callbacks that must keep one identity for the life of
+   * the view. A callback that changed when `active` flipped was a new prop —
+   * and a new prop is a reload (see the header).
+   */
+  const activeRef = useRef(active)
+  activeRef.current = active
+  const windowRef = useRef(window)
+  windowRef.current = window
 
   /*
    * The right to open a pdfium document ([AUDIT4 A8](../../AUDIT4.md)).
@@ -113,20 +156,29 @@ export function PdfRenderer({ file, active, onScaleChange }: RendererProps) {
   }, [file.id])
 
   /*
-   * The instant-open preview: the frame this document showed last time, at
-   * this window size, laid over the view until the live document has rendered
-   * ([storage/pdfPreview](../storage/pdfPreview.ts)).
+   * The instant-open preview: a frame this document showed before, at this
+   * window size, laid over the view until the live document has rendered
+   * ([storage/pdfPreview](../storage/pdfPreview.ts)). It must be a picture of
+   * exactly where the view is about to land, so:
    *
-   * Only for an open that lands on page 1 — the snapshot is of page 1's first
-   * frame, and showing it over any other page would be a picture of somewhere
-   * the reader is not going. Read once, at mount, against the window size then.
+   *  - restoring an exact position → the resume frame taken at that position;
+   *  - landing on the top of page 1 → page 1's first frame;
+   *  - anything else (a page-only restore lands on a page top nobody captured)
+   *    → none, and the blurred cover instead.
+   *
+   * Read once, at mount, against the window size then.
    */
-  const frameAtMount = useRef({ width: window.width, height: window.height }).current
-  const [previewUri] = useState(() =>
-    initialPage === 1 ? existingPreview(file.id, frameAtMount.width, frameAtMount.height) : null,
-  )
+  const [previewUri] = useState(() => {
+    if (initialOffset !== null) {
+      return existingResumePreview(file.id, frameAtMount.width, frameAtMount.height, initialOffset)
+    }
+    return initialPage === 1 ? existingPreview(file.id, frameAtMount.width, frameAtMount.height) : null
+  })
   const previewSource = useMemo(() => (previewUri ? { uri: previewUri } : null), [previewUri])
   const [previewGone, setPreviewGone] = useState(previewUri === null)
+  // Read by the resume capture, which must not photograph the preview itself.
+  const previewGoneRef = useRef(previewGone)
+  previewGoneRef.current = previewGone
   const previewOpacity = useSharedValue(1)
   const previewStyle = useAnimatedStyle(() => ({ opacity: previewOpacity.value }))
 
@@ -270,7 +322,8 @@ export function PdfRenderer({ file, active, onScaleChange }: RendererProps) {
 
   const captureFirstFrame = useCallback(
     (pageSize: { width: number; height: number }) => {
-      if (captured.current || initialPage !== 1) return
+      // `initialOffset` set means the open landed somewhere inside page 1, not at its top.
+      if (captured.current || initialPage !== 1 || initialOffset !== null) return
       const needPreview = !existingPreview(file.id, frameAtMount.width, frameAtMount.height)
       if (!needPreview && file.thumb) return
       captured.current = true
@@ -316,7 +369,73 @@ export function PdfRenderer({ file, active, onScaleChange }: RendererProps) {
         }
       })
     },
-    [file, initialPage, frameAtMount],
+    [file, initialPage, initialOffset, frameAtMount],
+  )
+
+  /*
+   * The resume frame: what the reader is looking at once they have stopped
+   * scrolling, kept so that reopening here is instant
+   * ([storage/pdfPreview](../storage/pdfPreview.ts)).
+   *
+   * Captured from the reading position as it settles, never on close or swipe
+   * away: both of those are animations, and a full-screen capture on the UI
+   * thread mid-animation is a dropped frame the user sees. The cost is that a
+   * reader who flicks and immediately closes reopens on the blurred cover.
+   *
+   * Not while zoomed (the restore lands at fit-to-width, so a zoomed frame
+   * could never match), not at the very top (page 1's own frame covers it),
+   * and the result is discarded if the reader moved during the capture.
+   */
+  const lastPosition = useRef<PdfPosition | null>(storedPosition)
+  const captureTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const captureToken = useRef(0)
+  useEffect(
+    () => () => {
+      captureToken.current++
+      if (captureTimer.current) clearTimeout(captureTimer.current)
+    },
+    [],
+  )
+
+  const captureResumeFrame = useCallback(
+    async (position: PdfPosition, token: number) => {
+      if (token !== captureToken.current || !activeRef.current || !previewGoneRef.current) return
+      if (!pdfViewRef.current) return
+      if (existingResumePreview(file.id, position.width, position.height, position.offset)) return
+      try {
+        // Deferred import: see `captureFirstFrame`.
+        const { captureRef } = await import('react-native-view-shot')
+        const shot = await captureRef(pdfViewRef, { format: 'jpg', quality: 0.85, result: 'tmpfile' })
+        if (token !== captureToken.current) {
+          // Moved while capturing: a frame of nowhere the reader will be.
+          discardCapture(shot)
+          return
+        }
+        saveResumePreview(file.id, position.width, position.height, position.offset, shot)
+      } catch {
+        // A nicety, like the first frame; never let it reach the reader.
+      }
+    },
+    [file.id],
+  )
+
+  const handlePositionChanged = useCallback(
+    (page: number, offset: number, zoom: number) => {
+      // A neighbour in the pager is mounted but not being read; it writes nothing.
+      if (!activeRef.current || !loaded.current) return
+      const size = windowRef.current
+      const position = { page, offset, width: size.width, height: size.height }
+      if (samePdfPosition(lastPosition.current, position)) return
+      lastPosition.current = position
+      setPdfPosition(file.id, position)
+
+      captureToken.current++
+      if (captureTimer.current) clearTimeout(captureTimer.current)
+      if (offset <= 0 || Math.abs(zoom - 1) > 0.01) return
+      const token = captureToken.current
+      captureTimer.current = setTimeout(() => void captureResumeFrame(position, token), RESUME_IDLE_MS)
+    },
+    [file.id, captureResumeFrame],
   )
 
   /*
@@ -329,6 +448,7 @@ export function PdfRenderer({ file, active, onScaleChange }: RendererProps) {
    * download-cache file that never exists before the view can mount.
    */
   const source = useMemo(() => ({ uri: fileUri(file.storedName), cache: false }), [file.storedName])
+  const restoreOffsetProp = initialOffset ?? -1
   const pdfStyle = useMemo(() => [styles.fill, { backgroundColor: theme.gutter }], [theme.gutter])
 
   const handleScaleChanged = useCallback((s: number) => onScaleChange?.(s), [onScaleChange])
@@ -342,14 +462,6 @@ export function PdfRenderer({ file, active, onScaleChange }: RendererProps) {
   // The loading state is ours (the preview, or `LoadingCover`), so the
   // library's own indicator renders nothing.
   const renderNothing = useCallback(() => <View />, [])
-
-  /*
-   * Read through a ref, so `handleLoadComplete` keeps one identity for the life
-   * of the view. A callback that changed when `active` flipped was a new prop —
-   * and a new prop is a reload.
-   */
-  const activeRef = useRef(active)
-  activeRef.current = active
 
   const handleLoadComplete = useCallback(
     (numberOfPages: number, _path: string, size: { width: number; height: number }) => {
@@ -389,6 +501,9 @@ export function PdfRenderer({ file, active, onScaleChange }: RendererProps) {
           source={source}
           // The initial page only. Later jumps use `setPage` — see the header.
           page={initialPage}
+          // And the exact spot on it, when known. -1 is "none" to the patched view.
+          initialPositionOffset={restoreOffsetProp}
+          onPositionChanged={handlePositionChanged}
           onLoadComplete={handleLoadComplete}
           onPageChanged={handlePageChanged}
           onScaleChanged={handleScaleChanged}

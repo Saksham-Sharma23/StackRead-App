@@ -89,6 +89,25 @@ export function copyIntoLibrary(
   groupId: string,
   orderInGroup: number,
 ): FileEntry {
+  const slot = newLibrarySlot(originalName)
+  new File(sourceUri).copySync(slot.target)
+  return libraryEntry(slot, originalName, groupId, orderInGroup)
+}
+
+/** Where a new file will live in the library: its id, extension and path. */
+export interface LibrarySlot {
+  id: string
+  ext: string
+  target: File
+}
+
+/**
+ * Allocates a library path for a file about to be copied in, after checking
+ * its extension. Split from `copyIntoLibrary` so a copy can happen elsewhere —
+ * files received from other apps are copied on a native background thread
+ * (`storage/incoming`) — without a second copy of the checks below.
+ */
+export function newLibrarySlot(originalName: string): LibrarySlot {
   ensureLibraryDir()
 
   /*
@@ -107,10 +126,16 @@ export function copyIntoLibrary(
 
   const id = nanoid(12)
   const ext = extensionOf(originalName)
-  const target = storedFile(id, ext)
+  return { id, ext, target: storedFile(id, ext) }
+}
 
-  new File(sourceUri).copySync(target)
-
+/** The index entry for a file now copied into its slot. */
+export function libraryEntry(
+  { id, ext, target }: LibrarySlot,
+  originalName: string,
+  groupId: string,
+  orderInGroup: number,
+): FileEntry {
   return {
     id,
     name: originalName,

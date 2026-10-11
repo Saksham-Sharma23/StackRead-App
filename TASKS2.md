@@ -1549,15 +1549,25 @@ Resolves [AUDIT2 §3.10](AUDIT2.md) / [AUDIT §3.8](AUDIT.md).
 Verified absent: no `componentDidCatch` or `getDerivedStateFromError` anywhere in
 the tree.
 
-### ☐ R7-3 — `versionCode` automation
+### ☑ R7-3 — `versionCode` automation
 
 Resolves [AUDIT2 §3.12](AUDIT2.md) / [AUDIT §3.7](AUDIT.md).
 
-**Files:** [scripts/release-check.mjs](scripts/release-check.mjs),
-[app.json](app.json)
+**Files:** [scripts/versioning.cjs](scripts/versioning.cjs),
+[app.config.js](app.config.js), [scripts/tune-gradle.mjs](scripts/tune-gradle.mjs),
+[scripts/release-check.mjs](scripts/release-check.mjs),
+[the CI workflow](.github/workflows/android-release.yml)
 
-- [ ] Increment `expo.android.versionCode` as part of `npm run apk`
-- [ ] Refuse the build if it did not increase since the last tagged release
+- [x] ~~Increment `expo.android.versionCode` as part of `npm run apk`~~ —
+  derived instead: versionCode = commits on HEAD, so there is nothing to
+  increment and no edit to forget. `app.json`'s value is now a floor.
+- [x] Refuse a build that cannot know its number — a shallow clone (where the
+  count is the depth) or no git. CI checks out with `fetch-depth: 0`.
+- [x] versionName = the `vX.Y.Z` tag on HEAD, else `app.json`'s `version`.
+
+Done differently from the plan, deliberately: incrementing a stored number in
+`npm run apk` would dirty the tree on every build and still drift between a
+local and a CI build of the same commit. Pinned by `versioning.test.ts`.
 
 Keeping it in `app.json` rather than generated `android/` is correct and
 documented ([DETAIL.md §7.3](DETAIL.md)) — a prebuild resets the generated copy.

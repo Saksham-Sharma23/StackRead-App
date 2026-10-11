@@ -1,8 +1,102 @@
+diff --git a/node_modules/react-native-pdf/android/src/main/java/org/wonday/pdf/PdfManager.java b/node_modules/react-native-pdf/android/src/main/java/org/wonday/pdf/PdfManager.java
+index 03c60d5..d60eadb 100644
+--- a/node_modules/react-native-pdf/android/src/main/java/org/wonday/pdf/PdfManager.java
++++ b/node_modules/react-native-pdf/android/src/main/java/org/wonday/pdf/PdfManager.java
+@@ -157,6 +157,12 @@ public class PdfManager extends SimpleViewManager<PdfView> implements RNPDFPdfVi
+         pdfView.setSinglePage(singlePage);
+     }
+ 
++    // StackRead patch: see PdfView.setInitialPositionOffset.
++    @ReactProp(name = "initialPositionOffset")
++    public void setInitialPositionOffset(PdfView pdfView, double offset) {
++        pdfView.setInitialPositionOffset((float) offset);
++    }
++
+     // It seems funny, but this method is called through delegate on Paper, but on Fabric we need to
+     // use `receiveCommand` method and call this one there
+     @Override
 diff --git a/node_modules/react-native-pdf/android/src/main/java/org/wonday/pdf/PdfView.java b/node_modules/react-native-pdf/android/src/main/java/org/wonday/pdf/PdfView.java
-index c3d3245..ada694e 100644
+index c3d3245..f3b2d3b 100644
 --- a/node_modules/react-native-pdf/android/src/main/java/org/wonday/pdf/PdfView.java
 +++ b/node_modules/react-native-pdf/android/src/main/java/org/wonday/pdf/PdfView.java
-@@ -339,10 +339,37 @@ public class PdfView extends PDFView implements OnPageChangeListener,OnLoadCompl
+@@ -99,6 +99,22 @@ public class PdfView extends PDFView implements OnPageChangeListener,OnLoadCompl
+     private float restoreXOffset = 0;
+     private float restoreYOffset = 0;
+ 
++    /**
++     * StackRead patch: an exact position to restore after the first load.
++     *
++     * A page number only restores the top of a page, so a reader who stopped
++     * halfway down came back half a screen away from where they left. This is
++     * getPositionOffset() as last reported (0..1 through the document), applied
++     * once with setPositionOffset(), which is its exact inverse at the same zoom
++     * and view size. Negative or zero means none: zero is the top of the
++     * document, which defaultPage already lands on.
++     */
++    private float initialPositionOffset = -1;
++
++    /** StackRead patch: how long scrolling must be still before its position is reported. */
++    private static final long POSITION_SETTLE_MS = 250;
++    private final Runnable positionReporter = this::reportPosition;
++
+     // used to store the parameters for `super.onSizeChanged`
+     private int oldW = 0;
+     private int oldH = 0;
+@@ -178,6 +194,15 @@ public class PdfView extends PDFView implements OnPageChangeListener,OnLoadCompl
+                 this.moveTo(xOffset, yOffset);
+                 this.loadPages();
+             });
++        } else if (this.initialPositionOffset > 0) {
++            // StackRead patch: the first load only. A reload after re-attach has
++            // the viewport snapshot above, which is more exact still.
++            final float offset = this.initialPositionOffset;
++            this.initialPositionOffset = -1;
++            this.post(() -> {
++                this.setPositionOffset(offset, false);
++                this.loadPages();
++            });
+         }
+ 
+         WritableMap event = Arguments.createMap();
+@@ -240,6 +265,29 @@ public class PdfView extends PDFView implements OnPageChangeListener,OnLoadCompl
+         Constants.Pinch.MINIMUM_ZOOM = this.minScale;
+         Constants.Pinch.MAXIMUM_ZOOM = this.maxScale;
+ 
++        // StackRead patch: called on every frame of a scroll, fling or zoom
++        // (moveTo calls it), so the report waits for the movement to stop.
++        this.removeCallbacks(this.positionReporter);
++        this.postDelayed(this.positionReporter, POSITION_SETTLE_MS);
++    }
++
++    /** StackRead patch: "positionChanged|page|positionOffset|zoom", page from 1. */
++    private void reportPosition() {
++        if (this.isRecycled()) return;
++
++        WritableMap event = Arguments.createMap();
++        event.putString("message", "positionChanged|" + (this.getCurrentPage() + 1) + "|"
++            + this.getPositionOffset() + "|" + this.getZoom());
++
++        ThemedReactContext context = (ThemedReactContext) getContext();
++        EventDispatcher dispatcher = UIManagerHelper.getEventDispatcherForReactTag(context, getId());
++        int surfaceId = UIManagerHelper.getSurfaceId(this);
++
++        TopChangeEvent tce = new TopChangeEvent(surfaceId, getId(), event);
++
++        if (dispatcher != null) {
++            dispatcher.dispatchEvent(tce);
++        }
+     }
+ 
+     @Override
+@@ -320,6 +368,7 @@ public class PdfView extends PDFView implements OnPageChangeListener,OnLoadCompl
+     // restores it after the re-attach reload.
+     @Override
+     protected void onDetachedFromWindow() {
++        this.removeCallbacks(this.positionReporter);
+         if (!this.isRecycled() && this.path != null) {
+             this.restorePath = this.path;
+             this.restoreZoom = this.getZoom();
+@@ -339,10 +388,37 @@ public class PdfView extends PDFView implements OnPageChangeListener,OnLoadCompl
          return pageCount;
      }
  
@@ -40,3 +134,56 @@ index c3d3245..ada694e 100644
  
              // set scale
              this.setMinZoom(this.minScale);
+@@ -423,6 +499,10 @@ public class PdfView extends PDFView implements OnPageChangeListener,OnLoadCompl
+     }
+ 
+     // page start from 1
++    public void setInitialPositionOffset(float offset) {
++        this.initialPositionOffset = offset;
++    }
++
+     public void setPage(int page) {
+         this.page = Math.max(page, 1);
+         this.handlePage(this.page - 1);
+diff --git a/node_modules/react-native-pdf/fabric/RNPDFPdfNativeComponent.js b/node_modules/react-native-pdf/fabric/RNPDFPdfNativeComponent.js
+index 43fea3b..f1d44ea 100644
+--- a/node_modules/react-native-pdf/fabric/RNPDFPdfNativeComponent.js
++++ b/node_modules/react-native-pdf/fabric/RNPDFPdfNativeComponent.js
+@@ -15,6 +15,8 @@
+    ...ViewProps,
+    path: ?string,
+    page: ?Int32,
++   // StackRead patch: an exact scroll position to restore once, after the first load.
++   initialPositionOffset: ?Double,
+    scale: ?Float,
+    minScale: ?Float,
+    maxScale: ?Float,
+diff --git a/node_modules/react-native-pdf/index.d.ts b/node_modules/react-native-pdf/index.d.ts
+index d8192b2..4c6039c 100644
+--- a/node_modules/react-native-pdf/index.d.ts
++++ b/node_modules/react-native-pdf/index.d.ts
+@@ -47,6 +47,10 @@ export interface PdfProps {
+     progressContainerStyle?: ReactNative.StyleProp<ReactNative.ViewStyle>,
+     source: Source | number,
+     page?: number,
++    /** StackRead patch: an exact position (0..1 through the document) restored once, after the first load. */
++    initialPositionOffset?: number,
++    /** StackRead patch: the scroll position, reported once scrolling has settled. */
++    onPositionChanged?: (page: number, positionOffset: number, zoom: number) => void,
+     scale?: number,
+     minScale?: number,
+     maxScale?: number,
+diff --git a/node_modules/react-native-pdf/index.js b/node_modules/react-native-pdf/index.js
+index 916faa5..75b2d64 100644
+--- a/node_modules/react-native-pdf/index.js
++++ b/node_modules/react-native-pdf/index.js
+@@ -428,6 +428,9 @@ export default class Pdf extends Component {
+                 },
+                 tableContents
+                 );
++            } else if (message[0] === 'positionChanged') {
++                // StackRead patch: the settled scroll position, see PdfView.reportPosition.
++                this.props.onPositionChanged && this.props.onPositionChanged(Number(message[1]), Number(message[2]), Number(message[3]));
+             } else if (message[0] === 'pageChanged') {
+                 this.props.onPageChanged && this.props.onPageChanged(Number(message[1]), Number(message[2]));
+             } else if (message[0] === 'error') {

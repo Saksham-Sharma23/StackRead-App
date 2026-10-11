@@ -1,4 +1,5 @@
-import { storage, scrollKey, zoomKey, progressKey, locationKey } from '../storage/mmkv'
+import { storage, scrollKey, zoomKey, progressKey, locationKey, pdfPositionKey } from '../storage/mmkv'
+import { formatPdfPosition, parsePdfPosition, type PdfPosition } from '../renderers/pdfPosition'
 
 /**
  * Per-file reading position and zoom.
@@ -27,7 +28,7 @@ import { storage, scrollKey, zoomKey, progressKey, locationKey } from '../storag
  * Warm on first read so a restore does not immediately rewrite the value it
  * just loaded.
  */
-const mirror: Record<string, number> = {}
+const mirror: Record<string, number | string> = {}
 
 export function getScroll(fileId: string): number {
   const key = scrollKey(fileId)
@@ -114,8 +115,33 @@ export function setAnchor(fileId: string, offset: number): void {
   storage.set(key, rounded)
 }
 
+/**
+ * A PDF's exact position, when scrolling last settled — see
+ * `renderers/pdfPosition` for what it is and when it is trusted.
+ */
+export function getPdfPosition(fileId: string): PdfPosition | null {
+  const key = pdfPositionKey(fileId)
+  const raw = storage.getString(key)
+  mirror[key] = raw ?? ''
+  return parsePdfPosition(raw)
+}
+
+export function setPdfPosition(fileId: string, position: PdfPosition): void {
+  const key = pdfPositionKey(fileId)
+  const raw = formatPdfPosition(position)
+  if (mirror[key] === raw) return
+  mirror[key] = raw
+  storage.set(key, raw)
+}
+
 export function forgetFile(fileId: string): void {
-  for (const key of [scrollKey(fileId), zoomKey(fileId), progressKey(fileId), locationKey(fileId)]) {
+  for (const key of [
+    scrollKey(fileId),
+    zoomKey(fileId),
+    progressKey(fileId),
+    locationKey(fileId),
+    pdfPositionKey(fileId),
+  ]) {
     storage.remove(key)
     // Or a later write of the same value would be skipped as "unchanged" and
     // the key would stay deleted while the app believed it had been rewritten.

@@ -13,6 +13,9 @@
  * `npm run apk:dev` skips this and keeps the fast single-ABI settings.
  */
 import { readFileSync, existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
+
+const { resolveVersion } = createRequire(import.meta.url)('./versioning.cjs')
 
 const problems = []
 const notes = []
@@ -37,19 +40,27 @@ if (!existsSync('credentials/stackread-release.keystore')) {
 }
 
 // --- versionCode -----------------------------------------------------------
-// The generated android/ is rewritten by prebuild, so app.json is the only
-// place a version can survive.
+// Derived from git, never bumped by hand (`scripts/versioning.cjs`). This only
+// has to make sure it *can* be derived: from a shallow clone or a copy without
+// .git the count would be wrong or absent, and the APK would build, install
+// fresh, and then refuse to update any phone that has a newer one.
 try {
   const app = JSON.parse(readFileSync('app.json', 'utf8'))
-  const code = app?.expo?.android?.versionCode
-  if (typeof code !== 'number') {
+  const floor = app?.expo?.android?.versionCode
+  if (typeof floor !== 'number') {
     problems.push(
       'expo.android.versionCode is missing from app.json.\n' +
-        '    The generated android/ resets it to 1 on every prebuild, so it has to\n' +
-        '    live here or updates become impossible to publish.',
+        '    It is the floor the derived versionCode never goes below; keep it.',
     )
-  } else {
-    notes.push(`versionCode ${code} (bump this for every upload)`)
+  }
+  try {
+    const { versionCode, versionName, fromTag } = resolveVersion({ version: app?.expo?.version, floor })
+    notes.push(
+      `version ${versionName} (${fromTag ? 'from the tag on HEAD' : 'from app.json; tag vX.Y.Z to name a release'})`,
+    )
+    notes.push(`versionCode ${versionCode} (commits on HEAD — automatic)`)
+  } catch (err) {
+    problems.push(`The versionCode cannot be derived: ${err.message}`)
   }
 
   if (app?.expo?.android?.allowBackup !== false) {

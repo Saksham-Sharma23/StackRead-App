@@ -14,6 +14,8 @@ import { LayoutAnimationConfig } from 'react-native-reanimated'
 import type { FileEntry, Group } from '../types'
 import type { OpenRect } from '../ui/openTransition'
 import { importFiles } from '../storage/files'
+import { summaryMessage, type BulkImportSummary } from '../storage/bulkImportRules'
+import type { ImportControl } from '../storage/bulkImport'
 import { searchFiles, type SearchPage } from '../storage/db'
 import { exportLibrary, importLibraryArchive } from '../storage/backup'
 import { snapshotLibrary, useLibrary } from '../store/library'
@@ -103,6 +105,7 @@ type SheetState =
   | { kind: 'move'; file: FileEntry }
   | { kind: 'group'; group: Group }
   | { kind: 'settings' }
+  | { kind: 'newGroup' }
 
 export function LibraryScreen({
   onOpenFile,
@@ -214,6 +217,9 @@ export function LibraryScreen({
   const [sheet, setSheet] = useState<SheetState>({ kind: 'none' })
   const [importing, setImporting] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
+  /** Progress text while a folder or ZIP is imported as a group; null otherwise. */
+  const [bulk, setBulk] = useState<string | null>(null)
+  const bulkControl = useRef<ImportControl | null>(null)
 
   /*
    * Tell the root-level cover factory when the board is mid-import or
@@ -222,8 +228,8 @@ export function LibraryScreen({
    */
   const setBoardBusy = useBoardActivity((s) => s.setBusy)
   useEffect(() => {
-    setBoardBusy(importing || busy !== null)
-  }, [importing, busy, setBoardBusy])
+    setBoardBusy(importing || busy !== null || bulk !== null)
+  }, [importing, busy, bulk, setBoardBusy])
   useEffect(() => () => setBoardBusy(false), [setBoardBusy])
 
   /*
@@ -440,6 +446,86 @@ export function LibraryScreen({
   const openSettings = useCallback(() => setSheet({ kind: 'settings' }), [])
 
   const addGroupRow = useCallback(() => addGroup(), [addGroup])
+  const openNewGroupMenu = useCallback(() => setSheet({ kind: 'newGroup' }), [])
+
+  /*
+   * Import a folder or a ZIP as a new group (`storage/bulkImport`).
+   *
+   * The module is loaded on first use: it carries the ZIP inflater, and
+   * nothing about it belongs in the startup graph. The overlay is the board's
+   * own import overlay plus a Cancel — a 500-file folder is minutes, not a
+   * moment — and a cancel removes everything copied so far.
+   */
+  const runBulkImport = useCallback(
+    async (label: string, task: (control: ImportControl) => Promise<BulkImportSummary>) => {
+      const control: ImportControl = {
+        cancelled: false,
+        onProgress: (done, total) =>
+          setBulk(total ? `Importing ${done} of ${total}…` : `Unpacking… ${done} file${done === 1 ? '' : 's'}`),
+      }
+      bulkControl.current = control
+      setBulk(label)
+      try {
+        const summary = await task(control)
+        const detail = summaryMessage(summary)
+        if (summary.added === 0) {
+          Alert.alert('Nothing imported', `No files StackRead can open were found.${detail ? `\n\n${detail}` : ''}`)
+        } else {
+          Alert.alert(
+            `Added ${summary.added} file${summary.added === 1 ? '' : 's'}`,
+            `New group: “${summary.groupTitle}”${detail ? `\n\n${detail}` : ''}`,
+          )
+        }
+      } catch (err) {
+        const name = err instanceof Error ? err.name : ''
+        if (name === 'ImportCancelled') return
+        if (name === 'ImportLimitError') Alert.alert('Import stopped', (err as Error).message)
+        else Alert.alert('Import failed', 'This couldn’t be read. Nothing was added.')
+      } finally {
+        bulkControl.current = null
+        setBulk(null)
+      }
+    },
+    [],
+  )
+
+  const handleImportFolder = useCallback(async () => {
+    if (importingRef.current || bulkControl.current) return
+    try {
+      const { pickFolder, importFolder } = await import('../storage/bulkImport')
+      const folder = await pickFolder()
+      if (!folder) return
+      await runBulkImport('Reading folder…', (control) => importFolder(folder, control))
+    } catch (err) {
+      Alert.alert('Import failed', err instanceof Error ? err.message : String(err))
+    }
+  }, [runBulkImport])
+
+  const handleImportZip = useCallback(async () => {
+    if (importingRef.current || bulkControl.current) return
+    try {
+      const { pickZip, importZip } = await import('../storage/bulkImport')
+      const zip = await pickZip()
+      if (!zip) return
+      await runBulkImport('Unpacking…', (control) => importZip(zip.uri, zip.name, control))
+    } catch (err) {
+      Alert.alert('Import failed', err instanceof Error ? err.message : String(err))
+    }
+  }, [runBulkImport])
+
+  const cancelBulkImport = useCallback(() => {
+    if (bulkControl.current) bulkControl.current.cancelled = true
+    setBulk('Cancelling…')
+  }, [])
+
+  const newGroupActions = useCallback(
+    (): SheetAction[] => [
+      { key: 'empty', label: 'New group', onPress: addGroupRow },
+      { key: 'folder', label: 'Import folder as group…', onPress: () => void handleImportFolder() },
+      { key: 'zip', label: 'Import ZIP as group…', onPress: () => void handleImportZip() },
+    ],
+    [addGroupRow, handleImportFolder, handleImportZip],
+  )
 
   const addToFirstGroup = useCallback(
     () => void handleAddFiles(firstGroupId),
@@ -766,7 +852,7 @@ ${result.uri}`)
   const listFooter = useMemo(
     () => (
       <Pressable
-        onPress={addGroupRow}
+        onPress={openNewGroupMenu}
         android_ripple={{ color: theme.border }}
         style={({ pressed }) => [
           styles.newGroup,
@@ -779,7 +865,7 @@ ${result.uri}`)
         <Text style={[styles.newGroupText, { color: theme.fgDim }]}>+ New group</Text>
       </Pressable>
     ),
-    [theme, addGroupRow],
+    [theme, openNewGroupMenu],
   )
 
   if (!loaded) {
@@ -840,7 +926,23 @@ ${result.uri}`)
       />
       </LayoutAnimationConfig>
 
-      {(importing || busy) && (
+      {bulk !== null && (
+        <View style={[styles.importing, { backgroundColor: theme.overlay }]}>
+          <ActivityIndicator color="#fff" />
+          <Text style={styles.importingText}>{bulk}</Text>
+          <Pressable
+            onPress={cancelBulkImport}
+            hitSlop={12}
+            style={styles.cancelImport}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel import"
+          >
+            <Text style={styles.cancelImportText}>Cancel</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {(importing || busy) && bulk === null && (
         <View style={[styles.importing, { backgroundColor: theme.overlay }]} pointerEvents="none">
           <ActivityIndicator color="#fff" />
           <Text style={styles.importingText}>{busy ?? 'Importing…'}</Text>
@@ -897,6 +999,15 @@ ${result.uri}`)
       />
 
       <ActionSheet
+        visible={sheet.kind === 'newGroup'}
+        title="New group"
+        subtitle="Start empty, or fill it from a folder or a ZIP"
+        actions={sheet.kind === 'newGroup' ? newGroupActions() : []}
+        theme={theme}
+        onClose={() => setSheet({ kind: 'none' })}
+      />
+
+      <ActionSheet
         visible={sheet.kind === 'settings'}
         title="Library"
         subtitle="Backups include every file and its groups"
@@ -945,4 +1056,13 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   importingText: { color: '#fff', fontSize: 14 },
+  cancelImport: {
+    marginTop: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.5)',
+  },
+  cancelImportText: { color: '#fff', fontSize: 14, fontWeight: '600' },
 })

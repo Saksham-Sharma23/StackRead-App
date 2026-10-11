@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native'
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native'
 import { StatusBar } from 'expo-status-bar'
 import * as SplashScreen from 'expo-splash-screen'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
@@ -20,6 +20,7 @@ import { PdfCoverFactory } from './src/components/PdfCoverFactory'
 import { usePdfsNeedingCovers } from './src/store/selectors'
 import { getVisibleGroups, useBoardActivity } from './src/store/boardActivity'
 import { whenPdfiumSettled } from './src/storage/pdfiumLease'
+import { useIncomingFiles } from './src/ui/useIncomingFiles'
 
 /*
  * Record fatal JS errors before React Native's default handler ends the
@@ -191,6 +192,27 @@ function Root() {
   /** Asks the reader to fold away. The unmount happens in `handleClosed`. */
   const handleClose = useCallback(() => setClosing(true), [])
 
+  /*
+   * Files from "Open with" and "Share" (`storage/incoming`), opened like a tap
+   * with no card to grow from.
+   *
+   * If a reader is already open, it is replaced — but not until any PDF in it
+   * has finished loading, the same wait a close makes ([AUDIT4 A8](AUDIT4.md)):
+   * swapping the reader unmounts the old document as surely as closing does.
+   */
+  const readingRef = useRef(reading)
+  readingRef.current = reading
+  const openReceived = useCallback(
+    async (file: FileEntry) => {
+      const current = readingRef.current
+      if (current?.id === file.id) return
+      if (current) await whenPdfiumSettled(PDF_CLOSE_GRACE_MS)
+      handleOpenFile(file, null)
+    },
+    [handleOpenFile],
+  )
+  const receiving = useIncomingFiles(loaded, openReceived)
+
   const handleClosed = useCallback(() => {
     /*
      * Not until any PDF in the reader has finished loading ([AUDIT4 A8](AUDIT4.md)).
@@ -285,6 +307,13 @@ function Root() {
       )}
 
       <CoverFactoryHost reading={reading !== null} />
+
+      {receiving !== null && (
+        <View style={[styles.receiving, { backgroundColor: theme.overlay }]} pointerEvents="none">
+          <ActivityIndicator color="#fff" />
+          <Text style={styles.receivingText}>{receiving}</Text>
+        </View>
+      )}
     </>
   )
 }
@@ -360,6 +389,18 @@ export default function App() {
 
 const styles = StyleSheet.create({
   fill: { flex: 1 },
+  // Matches the board's own import overlay.
+  receiving: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  receivingText: { color: '#fff', fontSize: 14 },
   // The splash navy: the one colour guaranteed to match whatever was on screen.
   crash: {
     flex: 1,

@@ -23,6 +23,7 @@
  * Dev mode is wired into the `prebuild` npm script; release mode into `apk`.
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 
 const FILE = 'android/gradle.properties'
 const PROGUARD = 'android/app/proguard-rules.pro'
@@ -71,6 +72,53 @@ if (!text.includes('kotlin.compiler.execution.strategy')) {
 }
 
 writeFileSync(FILE, text)
+
+/*
+ * The version, from git (`scripts/versioning.cjs`).
+ *
+ * Prebuild writes it through `app.config.js`, but `npm run apk` and
+ * `apk:dev` build the android/ that is already there — which carries whatever
+ * versionCode the last prebuild computed, possibly dozens of commits ago. An
+ * APK built from it installs fresh and then refuses to update anything newer.
+ * So it is rewritten here, on every build, from the same function.
+ *
+ * In release mode a version that cannot be derived, or a build.gradle this
+ * cannot find the lines in, stops the build: shipping a stale number is the
+ * failure this exists to prevent. In dev mode it warns and leaves the file.
+ */
+const GRADLE = 'android/app/build.gradle'
+{
+  const require = createRequire(import.meta.url)
+  const { resolveVersion } = require('./versioning.cjs')
+  const fail = (message) => {
+    if (release) {
+      console.error(`[tune-gradle] ${message}`)
+      process.exit(1)
+    }
+    console.warn(`[tune-gradle] ${message} (dev build: continuing)`)
+  }
+  try {
+    const app = JSON.parse(readFileSync('app.json', 'utf8')).expo
+    const { versionCode, versionName } = resolveVersion({
+      version: app.version,
+      floor: app.android?.versionCode,
+    })
+    const CODE = /^(\s*)versionCode\s+\d+\s*$/m
+    const NAME = /^(\s*)versionName\s+"[^"]*"\s*$/m
+    let gradle = existsSync(GRADLE) ? readFileSync(GRADLE, 'utf8') : ''
+    if (!CODE.test(gradle) || !NAME.test(gradle)) {
+      fail(`versionCode/versionName not found in ${GRADLE}; run \`npm run prebuild\`.`)
+    } else {
+      gradle = gradle
+        .replace(CODE, `$1versionCode ${versionCode}`)
+        .replace(NAME, `$1versionName "${versionName}"`)
+      writeFileSync(GRADLE, gradle)
+      console.log(`[tune-gradle] version ${versionName} (versionCode ${versionCode})`)
+    }
+  } catch (err) {
+    fail(err.message)
+  }
+}
 
 /*
  * R8 keep rules.

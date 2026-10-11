@@ -19,6 +19,13 @@ export const zoomKey = (fileId: string) => `zoom:${fileId}`
 /** Per-file reading position for formats that locate by something other than px (EPUB CFI). */
 export const locationKey = (fileId: string) => `loc:${fileId}`
 
+/**
+ * A PDF's exact scroll position, `page|offset|width|height` — see
+ * `getPdfPosition`. Per device and never backed up: it refines the page number
+ * in `scrollKey`, which is what a backup carries.
+ */
+export const pdfPositionKey = (fileId: string) => `pdfpos:${fileId}`
+
 /** How far through a file the reader has got, 0..100, shown on its library card. */
 export const progressKey = (fileId: string) => `progress:${fileId}`
 
@@ -61,6 +68,13 @@ export const thumbBusyKey = (fileId: string) => `thumbbusy:${fileId}`
  * dies and reported on the next launch. Message and a few stack lines only.
  */
 export const LAST_CRASH_KEY = 'lastCrash'
+
+/**
+ * The group files from "Open with" and "Share" go into (`storage/incoming`).
+ * An id, not a title, so the user can rename the group and it keeps working;
+ * if the group is deleted, a new one is made on the next arrival.
+ */
+export const INBOX_GROUP_KEY = 'inboxGroupId'
 
 export const PENDING_REMOVAL_KEY = 'pendingRemoval'
 

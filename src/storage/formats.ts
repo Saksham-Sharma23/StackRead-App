@@ -197,6 +197,48 @@ export const PICKER_MIME_TYPES: string[] = Array.from(
 export const SUPPORTED_EXTENSIONS: string[] = Object.keys(FORMATS)
 
 /**
+ * Other names senders use for the same types. Apps disagree: Markdown arrives
+ * as `text/x-markdown`, comics as `application/x-cbz`, and older Windows-origin
+ * zips as `application/x-zip-compressed`.
+ */
+const MIME_ALIASES: Record<string, string> = {
+  'application/x-pdf': 'pdf',
+  'text/x-markdown': 'md',
+  'application/x-cbz': 'cbz',
+  'application/x-zip-compressed': 'zip',
+  'image/jpg': 'jpg',
+}
+
+/**
+ * The extension to give a received file whose name carries none, from the
+ * type its sender declared — or undefined. Only renderable formats: naming a
+ * file `.tiff` would import something that cannot be opened.
+ */
+export function extensionForMime(mime: string | null | undefined): string | undefined {
+  if (!mime) return undefined
+  const type = mime.split(';')[0].trim().toLowerCase()
+  if (Object.prototype.hasOwnProperty.call(MIME_ALIASES, type)) return MIME_ALIASES[type]
+  for (const [ext, spec] of Object.entries(FORMATS)) {
+    if (spec.supported && spec.mime === type) return ext
+  }
+  return undefined
+}
+
+/**
+ * Every type StackRead offers to open from other apps, for the intent filters
+ * in `app.config.js` — which is CommonJS and cannot import this file, so it
+ * keeps its own copy, and `incoming.test.ts` holds the two to each other.
+ */
+export const INCOMING_MIME_TYPES: string[] = Array.from(
+  new Set([
+    ...Object.values(FORMATS)
+      .filter((s) => s.supported)
+      .map((s) => s.mime),
+    ...Object.keys(MIME_ALIASES),
+  ]),
+).sort()
+
+/**
  * Human-readable byte size.
  *
  * Binary units (1024), because that is what a file manager on Android reports —

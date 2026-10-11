@@ -62,7 +62,15 @@ jobs:
     # step of a run that never reached the code. Bump majors together, and
     # check each one's `action.yml` still accepts the inputs used below.
     steps:
+      # Full history, not the default depth-1 clone. The versionCode is the
+      # commit count (`scripts/versioning.cjs`), and in a shallow clone that
+      # count is the depth — every build would be versionCode 1, and no phone
+      # would accept it as an update. The tags come with it, which is what
+      # names a tagged build. `versioning.cjs` refuses a shallow clone, so
+      # dropping this fails the run rather than shipping a wrong number.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # Node 24, matching the version in README's requirements. NOT 20: the test
       # script runs TypeScript directly via `--experimental-strip-types`, which
