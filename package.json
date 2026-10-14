@@ -50,6 +50,7 @@
     "doctor": "expo-doctor",
     "tune-gradle": "node scripts/tune-gradle.mjs",
     "apk": "node scripts/release-check.mjs && node scripts/tune-gradle.mjs --release && node scripts/setup-signing.mjs && cd android && gradlew.bat assembleRelease",
+    "aab": "node scripts/release-check.mjs && node scripts/tune-gradle.mjs --release && node scripts/setup-signing.mjs && cd android && gradlew.bat bundleRelease",
     "apk:dev": "node scripts/tune-gradle.mjs && node scripts/setup-signing.mjs && cd android && gradlew.bat assembleRelease",
     "test": "node --test --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types \"src/**/*.test.ts\"",
     "check": "npm run typecheck && npm run test",
