@@ -120,4 +120,5 @@ Deeper notes for contributors: [CLAUDE.md](CLAUDE.md). The roadmap:
 
 ## License
 
-See [LICENSE](LICENSE).
+Copyright © 2026 Saksham. **All rights reserved.** The source is not licensed
+for reuse; see [LICENSE](LICENSE).

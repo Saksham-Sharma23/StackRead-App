@@ -1,6 +1,7 @@
 {
   "name": "stackread",
   "version": "1.5.0",
+  "license": "UNLICENSED",
   "main": "index.ts",
   "dependencies": {
     "buffer": "^6.0.3",
