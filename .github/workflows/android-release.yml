@@ -99,6 +99,46 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Installs the NDK before Gradle asks for it, with retries.
+      #
+      # Left to itself, Gradle downloads the NDK mid-build, exactly once. On
+      # 2026-11-02 that download arrived truncated ("Archive is not a ZIP
+      # archive") and failed the release after two minutes of configuration —
+      # nothing wrong with the code. A broken download here is retried; one
+      # that keeps failing still fails the run, but in this step, by name.
+      #
+      # The version is read from React Native's own catalogue, which is what
+      # `ndkVersion rootProject.ext.ndkVersion` resolves to — never hard-coded
+      # here, or an RN upgrade would leave CI installing the wrong one.
+      - name: Install the NDK
+        run: |
+          NDK=$(sed -n 's/^ndkVersion *= *"\(.*\)"/\1/p' node_modules/react-native/gradle/libs.versions.toml)
+          if [ -z "$NDK" ]; then
+            echo "::error::Could not read ndkVersion from react-native's libs.versions.toml."
+            exit 1
+          fi
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          echo "NDK $NDK into $SDK"
+          if [ -f "$SDK/ndk/$NDK/source.properties" ]; then
+            echo "already installed"
+            exit 0
+          fi
+          for attempt in 1 2 3; do
+            # A failed attempt can leave a half-unpacked directory and a cached
+            # partial download, which the next attempt would trip over again.
+            rm -rf "$SDK/ndk/$NDK" "$SDK/.temp"
+            # (yes || true): the step shell runs with pipefail, and yes dying of
+            # SIGPIPE once sdkmanager exits would otherwise fail a good install.
+            if (yes || true) | sdkmanager --install "ndk;$NDK" && [ -f "$SDK/ndk/$NDK/source.properties" ]; then
+              echo "installed on attempt $attempt"
+              exit 0
+            fi
+            echo "::warning::NDK install attempt $attempt failed; retrying"
+            sleep $((attempt * 15))
+          done
+          echo "::error::NDK $NDK could not be installed after 3 attempts."
+          exit 1
+
       # Passed through `env`, never interpolated into the shell command itself.
       # `${{ secrets.X }}` inside a `run:` block bakes the value into the command
       # line, where it can surface in a process listing or a shell trace even
