@@ -6,6 +6,7 @@ import { badgeOf } from '../storage/formats'
 import type { FileEntry } from '../types'
 import type { Theme } from '../ui/theme'
 import { Duration, Ease, layoutTransition } from '../ui/motion'
+import { useLookFonts } from '../looks/registry'
 
 /**
  * Find a file by name, anywhere in the library.
@@ -32,7 +33,7 @@ import { Duration, Ease, layoutTransition } from '../ui/motion'
  * search result most often raises next.
  */
 
-interface Props {
+export interface LibrarySearchProps {
   query: string
   results: SearchPage
   /** Rows to render. Raised a page at a time by `onShowMore`. */
@@ -53,7 +54,9 @@ export function LibrarySearch({
   onQueryChange,
   onShowMore,
   onOpenFile,
-}: Props) {
+}: LibrarySearchProps) {
+  // An optional look's type (TASKS3); null in Classic.
+  const fonts = useLookFonts()
   const searching = query.trim().length > 0
   const shown = results.files.slice(0, limit)
 
@@ -76,7 +79,7 @@ export function LibrarySearch({
           onChangeText={onQueryChange}
           placeholder="Search your library"
           placeholderTextColor={theme.fgFaint}
-          style={[styles.input, { color: theme.fg }]}
+          style={[styles.input, { color: theme.fg }, fonts?.body]}
           autoCorrect={false}
           autoCapitalize="none"
           returnKeyType="search"
@@ -96,7 +99,7 @@ export function LibrarySearch({
           style={[styles.results, { backgroundColor: theme.surface, borderColor: theme.border }]}
         >
           {shown.length === 0 ? (
-            <Text style={[styles.empty, { color: theme.fgFaint }]}>No files match</Text>
+            <Text style={[styles.empty, { color: theme.fgFaint }, fonts?.body]}>No files match</Text>
           ) : (
             shown.map((file) => {
               const badge = badgeOf(file.name)
@@ -132,7 +135,7 @@ export function LibrarySearch({
                       {badge.label}
                     </Text>
                   </View>
-                  <Text style={[styles.name, { color: theme.fg }]} numberOfLines={1}>
+                  <Text style={[styles.name, { color: theme.fg }, fonts?.body]} numberOfLines={1}>
                     {file.name}
                   </Text>
                 </AnimatedPressable>

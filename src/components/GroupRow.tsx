@@ -11,6 +11,7 @@ import { Duration, Ease, layoutTransition } from '../ui/motion'
 import { AddTile } from './AddTile'
 import { MoreTile } from './MoreTile'
 import { DraggableCard } from './DraggableCard'
+import type { Skin } from '../looks/skin'
 
 /**
  * One group: a horizontal row of cards.
@@ -48,9 +49,15 @@ interface Props {
   onFileMenu: (file: FileEntry) => void
   onAddFiles: (groupId: string) => void
   onGroupMenu: (group: Group) => void
+  /**
+   * The optional look drawing this row (TASKS3). Absent in Classic, which
+   * renders exactly as before; present, it supplies the header, card, add tile
+   * while this component keeps the state, rename and drag logic.
+   */
+  skin?: Skin
 }
 
-function GroupRowImpl({ group, theme, onOpenFile, onFileMenu, onAddFiles, onGroupMenu }: Props) {
+function GroupRowImpl({ group, theme, onOpenFile, onFileMenu, onAddFiles, onGroupMenu, skin }: Props) {
   /*
    * Ids, not entries.
    *
@@ -120,8 +127,36 @@ function GroupRowImpl({ group, theme, onOpenFile, onFileMenu, onAddFiles, onGrou
       // A row is the tallest thing on the board, so its collapse is the most
       // visible reflow in the app — and the most valuable layout transition.
       layout={layoutTransition()}
-      style={styles.row}
+      style={skin ? [styles.row, skin.rowStyle] : styles.row}
     >
+      {skin ? (
+        <skin.GroupHeader
+          group={group}
+          count={files.length}
+          theme={theme}
+          onMenu={() => onGroupMenu(group)}
+          title={
+            editing ? (
+              <TextInput
+                value={draft}
+                onChangeText={setDraft}
+                onBlur={commitTitle}
+                onSubmitEditing={commitTitle}
+                autoFocus
+                selectTextOnFocus
+                returnKeyType="done"
+                style={[styles.title, styles.titleInput, skin.groupTitle(theme), { borderColor: theme.accent }]}
+              />
+            ) : (
+              <Pressable onPress={() => setEditing(true)} hitSlop={6} style={styles.titlePress}>
+                <Text style={[styles.title, { color: theme.fg }, skin.groupTitle(theme)]} numberOfLines={1}>
+                  {group.title}
+                </Text>
+              </Pressable>
+            )
+          }
+        />
+      ) : (
       <View style={styles.header}>
         {editing ? (
           <TextInput
@@ -155,11 +190,12 @@ function GroupRowImpl({ group, theme, onOpenFile, onFileMenu, onAddFiles, onGrou
           <Text style={[styles.groupMenuGlyph, { color: theme.fgDim }]}>⋯</Text>
         </Pressable>
       </View>
+      )}
 
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.strip}
+        contentContainerStyle={skin ? [styles.strip, skin.stripStyle] : styles.strip}
         // Keeps the row responsive while the vertical board is also scrollable.
         directionalLockEnabled
         // Freeze the strip while a card is lifted, or the scroll view and the
@@ -182,6 +218,7 @@ function GroupRowImpl({ group, theme, onOpenFile, onFileMenu, onAddFiles, onGrou
             onMenu={onFileMenu}
             onReorder={handleReorder}
             onDragStateChange={setDragging}
+            Card={skin?.Card}
           />
         ))}
         {hidden > 0 && (
@@ -192,7 +229,11 @@ function GroupRowImpl({ group, theme, onOpenFile, onFileMenu, onAddFiles, onGrou
           />
         )}
 
-        <AddTile theme={theme} onPress={() => onAddFiles(group.id)} />
+        {skin ? (
+          <skin.AddTile theme={theme} onPress={() => onAddFiles(group.id)} />
+        ) : (
+          <AddTile theme={theme} onPress={() => onAddFiles(group.id)} />
+        )}
       </ScrollView>
     </Animated.View>
   )

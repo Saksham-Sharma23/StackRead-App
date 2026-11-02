@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, type ComponentType } from 'react'
 import { StyleSheet } from 'react-native'
 import { Gesture, GestureDetector } from 'react-native-gesture-handler'
 import Animated, {
@@ -16,6 +16,7 @@ import type { OpenRect } from '../ui/openTransition'
 import { CARD, type Theme } from '../ui/theme'
 import { Duration, Ease, Scale, Spring, layoutTransition, useReducedMotion } from '../ui/motion'
 import { FileCard } from './FileCard'
+import type { LookCardProps } from '../looks/skin'
 
 /**
  * A card that can be long-pressed and dragged to reorder — **within its own row
@@ -43,6 +44,12 @@ interface Props {
   onDragStateChange: (dragging: boolean) => void
   /** False in long rows, where per-card layout bookkeeping costs more than it shows. */
   animateLayout?: boolean
+  /**
+   * The card to draw, for the optional looks (TASKS3). Absent in Classic, which
+   * draws FileCard exactly as before. A look's card keeps FileCard's slot width,
+   * which `SLOT` above depends on.
+   */
+  Card?: ComponentType<LookCardProps>
 }
 
 export function DraggableCard({
@@ -55,6 +62,7 @@ export function DraggableCard({
   onReorder,
   onDragStateChange,
   animateLayout = true,
+  Card,
 }: Props) {
   const offsetX = useSharedValue(0)
   const lifted = useSharedValue(0)
@@ -170,12 +178,16 @@ export function DraggableCard({
         layout={animateLayout ? layoutTransition() : undefined}
       >
         <Animated.View style={[styles.wrap, style]}>
-          <FileCard
-            fileId={fileId}
-            theme={theme}
-            onOpen={onOpen}
-            onMenu={onMenu}
-          />
+          {Card ? (
+            <Card fileId={fileId} index={index} theme={theme} onOpen={onOpen} onMenu={onMenu} />
+          ) : (
+            <FileCard
+              fileId={fileId}
+              theme={theme}
+              onOpen={onOpen}
+              onMenu={onMenu}
+            />
+          )}
         </Animated.View>
       </Animated.View>
     </GestureDetector>

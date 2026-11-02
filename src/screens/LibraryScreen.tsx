@@ -34,6 +34,9 @@ import { LibrarySearch } from '../components/LibrarySearch'
 import { MoveSheetContainer } from '../components/MoveSheet'
 import { EmptyBoard } from '../components/EmptyBoard'
 import { useTheme } from '../ui/theme'
+import { LOOK_CHOICES, lookSheetActions, useSkin } from '../looks/registry'
+import { cleanTitle } from '../looks/text'
+import { useAppearance } from '../store/appearance'
 
 /**
  * The 2-D board: groups stacked vertically, files arranged horizontally within
@@ -106,6 +109,10 @@ type SheetState =
   | { kind: 'group'; group: Group }
   | { kind: 'settings' }
   | { kind: 'newGroup' }
+  | { kind: 'look' }
+
+/** The board's vertical scroll offset, remembered while the board is unmounted for the reader. */
+let boardOffset = 0
 
 export function LibraryScreen({
   onOpenFile,
@@ -119,6 +126,20 @@ export function LibraryScreen({
 }) {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
+  /*
+   * The optional look drawing the board (TASKS3). Undefined in Classic, and
+   * every place it is read below falls back to exactly what Classic rendered
+   * before looks existed.
+   */
+  const skin = useSkin()
+  /*
+   * A look draws the same sheets and search with its own layout and type
+   * (looks/sheets.tsx). In Classic these are exactly ActionSheet and
+   * LibrarySearch.
+   */
+  const Sheet = skin?.Sheet ?? ActionSheet
+  const Search = skin?.Search ?? LibrarySearch
+  const storedLook = useAppearance((s) => s.look)
 
   const load = useLibrary((s) => s.load)
   const reload = useLibrary((s) => s.reload)
@@ -213,6 +234,26 @@ export function LibraryScreen({
     itemVisiblePercentThreshold: 50,
     minimumViewTime: 0,
   }).current
+
+  /*
+   * Where the board was scrolled to, kept across the reader.
+   *
+   * The board unmounts while a file is open, so it used to come back at the
+   * top every time — and now that it is drawn underneath the closing reader,
+   * the reader would fold back towards a card that was no longer there. The
+   * offset lives at module scope (it must outlive this component) and is put
+   * back on the first layout, before anything is seen.
+   */
+  const listRef = useRef<FlatList<Group>>(null)
+  const restored = useRef(false)
+  const rememberOffset = useCallback((e: { nativeEvent: { contentOffset: { y: number } } }) => {
+    boardOffset = e.nativeEvent.contentOffset.y
+  }, [])
+  const restoreOffset = useCallback(() => {
+    if (restored.current) return
+    restored.current = true
+    if (boardOffset > 0) listRef.current?.scrollToOffset({ offset: boardOffset, animated: false })
+  }, [])
 
   const [sheet, setSheet] = useState<SheetState>({ kind: 'none' })
   const [importing, setImporting] = useState(false)
@@ -520,9 +561,9 @@ export function LibraryScreen({
 
   const newGroupActions = useCallback(
     (): SheetAction[] => [
-      { key: 'empty', label: 'New group', onPress: addGroupRow },
-      { key: 'folder', label: 'Import folder as group…', onPress: () => void handleImportFolder() },
-      { key: 'zip', label: 'Import ZIP as group…', onPress: () => void handleImportZip() },
+      { key: 'empty', label: 'New group', icon: 'plus', detail: 'Name it now, add files whenever.', onPress: addGroupRow },
+      { key: 'folder', label: 'Import folder as group…', icon: 'folder', detail: 'Every file inside becomes a card, subfolders included.', onPress: () => void handleImportFolder() },
+      { key: 'zip', label: 'Import ZIP as group…', icon: 'zip', detail: 'Unpacked into a new group — up to 1,000 files.', onPress: () => void handleImportZip() },
     ],
     [addGroupRow, handleImportFolder, handleImportZip],
   )
@@ -602,18 +643,33 @@ ${result.uri}`)
 
   const settingsActions = useCallback(
     (): SheetAction[] => [
-      { key: 'export', label: 'Back up library…', onPress: () => void handleExport() },
-      { key: 'restore', label: 'Restore from backup…', onPress: () => void handleRestore() },
+      /*
+       * The one Classic-visible change in TASKS3: a way in to the looks. A
+       * plain row of the existing sheet, until the full Appearance screen (L2)
+       * replaces the picker it opens.
+       */
+      {
+        key: 'look',
+        label: 'Look…',
+        icon: 'palette',
+        meta: LOOK_CHOICES.find((c) => c.look === storedLook)?.label,
+        onPress: () => setSheet({ kind: 'look' }),
+      },
+      { key: 'export', label: 'Back up library…', icon: 'upload', onPress: () => void handleExport() },
+      { key: 'restore', label: 'Restore from backup…', icon: 'restore', onPress: () => void handleRestore() },
     ],
-    [handleExport, handleRestore],
+    [handleExport, handleRestore, storedLook],
   )
+
+  const lookActions = useCallback(() => lookSheetActions(storedLook), [storedLook])
 
   const fileActions = useCallback(
     (file: FileEntry): SheetAction[] => [
-      { key: 'open', label: 'Open', onPress: () => onOpenFile(file) },
-      { key: 'move', label: 'Move to group…', onPress: () => setSheet({ kind: 'move', file }) },
+      { key: 'open', label: 'Open', icon: 'open', onPress: () => onOpenFile(file) },
+      { key: 'move', label: 'Move to group…', icon: 'move', onPress: () => setSheet({ kind: 'move', file }) },
       {
         key: 'remove',
+        icon: 'trash',
         label: 'Remove',
         destructive: true,
         onPress: () => queueRemoval(file),
@@ -709,11 +765,13 @@ ${result.uri}`)
       return [
         {
           key: 'add',
+          icon: 'filePlus',
           label: 'Add files…',
           onPress: () => void handleAddFiles(group.id),
         },
         {
           key: 'delete',
+          icon: 'trash',
           label: count ? `Delete group and ${count} file(s)` : 'Delete group',
           destructive: true,
           disabled: groups.length <= 1,
@@ -761,9 +819,10 @@ ${result.uri}`)
         onFileMenu={handleFileMenu}
         onAddFiles={handleRowAddFiles}
         onGroupMenu={handleGroupMenu}
+        skin={skin}
       />
     ),
-    [theme, onOpenFile, handleFileMenu, handleRowAddFiles, handleGroupMenu],
+    [theme, onOpenFile, handleFileMenu, handleRowAddFiles, handleGroupMenu, skin],
   )
 
   /*
@@ -789,7 +848,23 @@ ${result.uri}`)
    * `results` are its own props) while an import or a sheet toggle does not.
    */
   const listHeader = useMemo(
-    () => (
+    () => skin ? (
+      <View style={skin.headerStyle}>
+        <skin.BoardHeader theme={theme} fileCount={fileCount} groupCount={groups.length} onMenu={openSettings} />
+        {fileCount === 0 && <skin.Empty theme={theme} onAddFiles={addToFirstGroup} onImport={openNewGroupMenu} />}
+        {fileCount >= SEARCH_THRESHOLD && (
+          <Search
+            query={searchQuery}
+            results={results}
+            limit={pages * SEARCH_PAGE}
+            theme={theme}
+            onQueryChange={runSearch}
+            onShowMore={showMore}
+            onOpenFile={onOpenFile}
+          />
+        )}
+      </View>
+    ) : (
       <View style={styles.header}>
         <View style={styles.headerRow}>
           <Text style={[styles.appTitle, { color: theme.fg }]}>StackRead</Text>
@@ -846,11 +921,15 @@ ${result.uri}`)
       onOpenFile,
       openSettings,
       addToFirstGroup,
+      skin,
+      openNewGroupMenu,
     ],
   )
 
   const listFooter = useMemo(
-    () => (
+    () => skin ? (
+      <skin.NewGroup theme={theme} onPress={openNewGroupMenu} />
+    ) : (
       <Pressable
         onPress={openNewGroupMenu}
         android_ripple={{ color: theme.border }}
@@ -865,7 +944,7 @@ ${result.uri}`)
         <Text style={[styles.newGroupText, { color: theme.fgDim }]}>+ New group</Text>
       </Pressable>
     ),
-    [theme, openNewGroupMenu],
+    [theme, openNewGroupMenu, skin],
   )
 
   if (!loaded) {
@@ -904,6 +983,10 @@ ${result.uri}`)
       */}
       <LayoutAnimationConfig skipEntering>
       <FlatList
+        ref={listRef}
+        onScroll={rememberOffset}
+        scrollEventThrottle={100}
+        onLayout={restoreOffset}
         data={groups}
         keyExtractor={groupKey}
         contentContainerStyle={listContentStyle}
@@ -966,9 +1049,17 @@ ${result.uri}`)
 
       <UndoToasts theme={theme} />
 
-      <ActionSheet
+      <Sheet
         visible={sheet.kind === 'file'}
-        title={sheet.kind === 'file' ? sheet.file.name : undefined}
+        title={
+          sheet.kind !== 'file'
+            ? undefined
+            : skin
+              ? cleanTitle(sheet.file.name)
+              : sheet.file.name
+        }
+        // In a look the card shows a cleaned title, so the sheet names the real file too.
+        subtitle={sheet.kind === 'file' && skin ? sheet.file.name : undefined}
         actions={sheet.kind === 'file' ? fileActions(sheet.file) : []}
         theme={theme}
         onClose={() => setSheet({ kind: 'none' })}
@@ -998,7 +1089,7 @@ ${result.uri}`)
         onClose={() => setSheet({ kind: 'none' })}
       />
 
-      <ActionSheet
+      <Sheet
         visible={sheet.kind === 'newGroup'}
         title="New group"
         subtitle="Start empty, or fill it from a folder or a ZIP"
@@ -1007,7 +1098,7 @@ ${result.uri}`)
         onClose={() => setSheet({ kind: 'none' })}
       />
 
-      <ActionSheet
+      <Sheet
         visible={sheet.kind === 'settings'}
         title="Library"
         subtitle="Backups include every file and its groups"
@@ -1016,7 +1107,16 @@ ${result.uri}`)
         onClose={() => setSheet({ kind: 'none' })}
       />
 
-      <ActionSheet
+      <Sheet
+        visible={sheet.kind === 'look'}
+        title="Look"
+        subtitle="Restyles the board and the reader"
+        actions={sheet.kind === 'look' ? lookActions() : []}
+        theme={theme}
+        onClose={() => setSheet({ kind: 'none' })}
+      />
+
+      <Sheet
         visible={sheet.kind === 'group'}
         title={sheet.kind === 'group' ? sheet.group.title : undefined}
         actions={sheet.kind === 'group' ? groupActions(sheet.group) : []}

@@ -94,6 +94,19 @@ test('E2: the EPUB parser and fast-xml-parser are not evaluated at startup', () 
   assert.ok(!packages.has('mammoth') && !packages.has('xlsx'), 'nor the DOCX or spreadsheet parsers')
 })
 
+test('TASKS3: the optional looks and react-native-svg load on first use, not at startup', () => {
+  // Classic users must not pay for looks they never chose. The registry loads
+  // each look with a deferred require; a static import anywhere on the startup
+  // path would silently undo that.
+  const { modules, packages } = startupGraph(resolve(ROOT, 'index.ts'))
+  const reached = [...modules].map(rel)
+  assert.ok(reached.includes('src/looks/registry.ts'), 'the walk must reach the registry')
+  for (const look of ['src/looks/modern.tsx', 'src/looks/notebook.tsx', 'src/looks/shelf.tsx', 'src/looks/terminal.tsx', 'src/looks/sheets.tsx', 'src/looks/emptyBoard.tsx', 'src/looks/layout.tsx', 'src/looks/Icon.tsx']) {
+    assert.ok(!reached.includes(look), `${look} must not be in the startup graph`)
+  }
+  assert.ok(!packages.has('react-native-svg'), 'react-native-svg must not load at startup')
+})
+
 test('E2: lifecycle takes the prefetch memo from the import-free module', () => {
   const lifecycle = readFileSync(resolve(ROOT, 'src/storage/lifecycle.ts'), 'utf8')
   assert.ok(lifecycle.includes("from '../renderers/webview/prefetchState'"))

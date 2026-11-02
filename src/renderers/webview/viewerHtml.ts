@@ -145,7 +145,9 @@ ${
     color: var(--sr-ink);
   }
   body {
-    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    /* --sr-font is set only by the optional looks (TASKS3 L5); unset, this is
+       the viewer's own stack, unchanged. */
+    font-family: var(--sr-font, -apple-system, "Segoe UI", Roboto, sans-serif);
     font-size: var(--sr-font-size);
     line-height: var(--sr-line-height);
     word-wrap: break-word;
@@ -177,19 +179,19 @@ ${
   h1, h2, h3, h4 { line-height: 1.28; margin: 1.6em 0 .6em; font-weight: 650; }
   h1 { font-size: 1.7em; } h2 { font-size: 1.4em; } h3 { font-size: 1.18em; }
   p { margin: 0 0 1em; }
-  a { color: ${theme.accent}; }
+  a { color: var(--sr-link, ${theme.accent}); }
   hr { border: 0; border-top: 1px solid ${theme.border}; margin: 1.8em 0; }
   blockquote {
     margin: 1em 0; padding: .2em 0 .2em 1em;
     border-left: 3px solid ${theme.border}; color: ${theme.fgDim};
   }
   code {
-    background: ${theme.surfaceAlt};
+    background: var(--sr-code, ${theme.surfaceAlt});
     padding: .15em .38em; border-radius: 4px;
     font: .88em/1.5 ui-monospace, Menlo, Consolas, monospace;
   }
   pre {
-    background: ${theme.surfaceAlt};
+    background: var(--sr-code, ${theme.surfaceAlt});
     padding: 12px 14px; border-radius: 9px;
     overflow-x: auto;
   }
@@ -1318,6 +1320,25 @@ ${
     return String(s).replace(/["\\\\]/g, '\\\\$&');
   }
 
+  /**
+   * Installs the reading font sent by the host: one @font-face block whose
+   * faces are data: URLs, the only font source the CSP allows. An empty string
+   * removes it. Re-measures once the face has actually loaded, since a new
+   * typeface changes every line break.
+   */
+  function installFont(css) {
+    var el = document.getElementById('sr-font');
+    if (!el) {
+      el = document.createElement('style');
+      el.id = 'sr-font';
+      document.head.appendChild(el);
+    }
+    el.textContent = css || '';
+    var settle = function () { measure(); reportPosition(true); };
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(settle);
+    else requestAnimationFrame(settle);
+  }
+
   /** Applies reader typography without touching the document itself. */
   function applySettings(s) {
     if (!s) return;
@@ -1327,6 +1348,11 @@ ${
     if (s.margin != null) root.setProperty('--sr-margin', s.margin + 'px');
     if (s.paper) root.setProperty('--sr-paper', s.paper);
     if (s.ink) root.setProperty('--sr-ink', s.ink);
+    // Set by the optional looks only. An empty string removes the property,
+    // which puts the stylesheet's own value back.
+    if (s.fontFamily != null) root.setProperty('--sr-font', s.fontFamily);
+    if (s.link != null) root.setProperty('--sr-link', s.link);
+    if (s.code != null) root.setProperty('--sr-code', s.code);
 
     // Geometry depends on type size, so re-measure after the style lands.
     requestAnimationFrame(function () { measure(); reportPosition(true); });
@@ -1597,6 +1623,7 @@ ${
       if (msg.type === 'seek') seekToPage(msg.page);
       else if (msg.type === 'seekHref') seekToHref(msg.href);
       else if (msg.type === 'settings') applySettings(msg.settings);
+      else if (msg.type === 'font') installFont(msg.css);
       else if (msg.type === 'image') attachImage(msg.token, msg.mime, msg.data);
       else if (msg.type === 'search') runSearch(msg.query, msg);
       else if (msg.type === 'searchNext') goToMatch(matchIndex + 1);

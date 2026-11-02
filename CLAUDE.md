@@ -4,9 +4,10 @@
 
 React Native port of a desktop (Electron) file reader. Full project history in
 [DETAIL.md](DETAIL.md) · usage and build in [README.md](README.md) · platform
-setup in [docs/RN_ANDROID_SETUP.md](docs/RN_ANDROID_SETUP.md) · audits in
+setup in [docs/setup/android-setup.md](docs/setup/android-setup.md) · audits in
 [AUDIT.md](AUDIT.md), [AUDIT2.md](AUDIT2.md), [AUDIT3.md](AUDIT3.md) · the work
-queue in [TASKS.md](TASKS.md) and [TASKS2.md](TASKS2.md).
+queue in [TASKS.md](TASKS.md), [TASKS2.md](TASKS2.md) and [TASKS3.md](TASKS3.md) (optional
+looks and themes, Pro).
 
 This file is the **operational reference**: what the app is, how it is built,
 the rules that cost real debugging time, and where each thing lives. It does not

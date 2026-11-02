@@ -109,7 +109,7 @@ jobs:
           STORE_PASSWORD: ${{ secrets.STACKREAD_STORE_PASSWORD }}
         run: |
           if [ -z "$KEYSTORE_BASE64" ]; then
-            echo "::error::STACKREAD_KEYSTORE_BASE64 is not set. See docs/CI_RELEASE.md."
+            echo "::error::STACKREAD_KEYSTORE_BASE64 is not set. See docs/release/ci-release.md."
             exit 1
           fi
           mkdir -p credentials

@@ -12,7 +12,12 @@ import { storage } from '../storage/mmkv'
  * restyles instantly without re-parsing or re-sending the document.
  */
 
-export type ReaderTheme = 'system' | 'light' | 'sepia' | 'dark' | 'black'
+/**
+ * `mist` and `dusk` are offered only by the optional looks' Display sheet
+ * (TASKS3 L5). Classic's sheet never shows them, and if one is stored when the
+ * app is back in Classic, the viewer draws it as `light` / `dark`.
+ */
+export type ReaderTheme = 'system' | 'light' | 'sepia' | 'mist' | 'dusk' | 'dark' | 'black'
 
 export interface ReaderSettings {
   /** Base font size in px. */

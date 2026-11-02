@@ -11,6 +11,7 @@ import { forgetSize, clearSizeCache } from './files'
 import { resetThumbnailAttempt, resetAllThumbnailAttempts } from './thumbs'
 import { forgetSnippet, clearSnippets } from '../components/useSnippet'
 import { forgetPreviews, clearPreviews } from './pdfPreview'
+import { forgetShownProgress, clearShownProgress } from '../looks/shownProgress'
 
 /**
  * The one place that knows when a `file.id` stops being valid.
@@ -105,6 +106,8 @@ export function forgetFileEverywhere(fileId: string): void {
   // because an export deliberately preserves ids.
   forgetSnippet(fileId)
   forgetPreviews(fileId)
+  // What a look card last showed as progress (looks/shownProgress.ts).
+  forgetShownProgress(fileId)
   /*
    * Reading position, chapters and search results for this id.
    *
@@ -149,6 +152,7 @@ export function resetAllCaches(): void {
   resetPrefetchFailures()
   clearSnippets()
   clearPreviews()
+  clearShownProgress()
   forgetAllScroll()
   /*
    * The two id-keyed stores, cleared wholesale.

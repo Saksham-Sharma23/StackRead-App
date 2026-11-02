@@ -24,6 +24,9 @@ import { SearchBar } from '../components/SearchBar'
 import { isAvailable as pdfSearchIsAvailable } from '../../modules/pdf-text/src'
 import type { TocEntry } from '../renderers/webview/pagination'
 import { useTheme } from '../ui/theme'
+import { lookSheetActions, useSkin } from '../looks/registry'
+import { useAppearance } from '../store/appearance'
+import { useLastRead } from '../store/lastRead'
 import { Spring } from '../ui/motion'
 import { useFullscreen } from '../ui/useFullscreen'
 
@@ -49,7 +52,7 @@ interface Props {
  * value gets all three correct by construction, where a second boolean beside
  * this one would have had to be added to each of them by hand.
  */
-type Sheet = 'none' | 'file' | 'group' | 'toc' | 'display' | 'menu'
+type Sheet = 'none' | 'file' | 'group' | 'toc' | 'display' | 'menu' | 'look'
 
 /**
  * Height of the top bar's content, below the status-bar inset.
@@ -78,6 +81,12 @@ const CHROME_IDLE_MS = 2500
 
 export function ReaderScreen({ initialFile, onClose }: Props) {
   const theme = useTheme()
+  /** The optional look's chrome (TASKS3); undefined in Classic. */
+  const skin = useSkin()
+  /** The stored choice, for the Look picker in the ⋯ menu. */
+  const storedLook = useAppearance((s) => s.look)
+  /** The look picker is the look's own sheet when a look is active, Classic's otherwise. */
+  const LookSheet = skin?.Sheet ?? ActionSheet
   const insets = useSafeAreaInsets()
 
   const groups = useGroupsSorted()
@@ -163,6 +172,12 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
 
 
   const current = files[index]
+
+  // Which file is on screen, so a look's board can ring that card when the
+  // reader closes (store/lastRead). Not a render input; nothing here re-renders.
+  useEffect(() => {
+    if (current) useLastRead.getState().setCurrent(current.id)
+  }, [current?.id])
   const currentGroupTitle = groups.find((g) => g.id === groupId)?.title ?? 'Group'
 
   // Must return a *stable* reference. `?? []` allocates a fresh array on every
@@ -341,6 +356,8 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
     }
 
     items.push({ key: 'display', glyph: 'Aa', label: 'Display', onPress: () => setSheet('display') })
+    // Change look without leaving the document — the same picker as the board's ⋯ sheet.
+    items.push({ key: 'look', glyph: '◐', label: 'Look', onPress: () => setSheet('look') })
     return items
   }, [toc.length, setSearchOpen, setSheet])
 
@@ -370,7 +387,30 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
         />
       </View>
 
-      {/* Top bar: back · file picker · group picker · overflow menu */}
+      {/*
+        An optional look (TASKS3) draws its own top and bottom chrome: a
+        breadcrumb instead of the two dropdowns, and its own position bar
+        instead of the dots. Same sheets, same callbacks. Classic falls through
+        to the original bars below, unchanged.
+      */}
+      {skin ? (
+        <Animated.View pointerEvents={chromeVisible ? 'auto' : 'none'} style={[styles.lookTop, chromeStyle]}>
+          <skin.ReaderTop
+            theme={theme}
+            insetTop={insets.top}
+            file={current}
+            groupId={groupId}
+            groupTitle={currentGroupTitle}
+            index={index}
+            count={files.length}
+            onBack={onClose}
+            onFile={() => setSheet('file')}
+            onGroup={() => setSheet('group')}
+            onMenu={() => setSheet('menu')}
+          />
+        </Animated.View>
+      ) : (
+      /* Top bar: back · file picker · group picker · overflow menu */
       <Animated.View
         pointerEvents={chromeVisible ? 'auto' : 'none'}
         style={[styles.topBar, { paddingTop: insets.top + 8 }, chromeStyle]}
@@ -383,12 +423,16 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
           textStyle={styles.backGlyph}
         />
 
-        {/* File and Group pickers, mirroring the desktop reader's top bar. */}
+        {/*
+          File and Group pickers, mirroring the desktop reader's top bar.
+          Equal widths (changed 2026-11-02 at the user's request; File used to
+          take 1.35 shares), the same as every look's bar.
+        */}
         <Dropdown
           label="File"
           value={current.name}
           onPress={() => setSheet('file')}
-          flex={1.35}
+          flex={1}
         />
 
         <Dropdown
@@ -415,6 +459,7 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
           style={styles.toolBtn}
         />
       </Animated.View>
+      )}
 
       {/*
         Only while the chrome is up: the bar is part of the chrome, and leaving
@@ -451,30 +496,70 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
         onSeekingChange={setSeeking}
       />
 
-      {/* Bottom: dots for position within the group */}
+      {skin ? (
+        <Animated.View pointerEvents={chromeVisible ? 'auto' : 'none'} style={[styles.lookBottom, dotsStyle]}>
+          <skin.ReaderBottom
+            theme={theme}
+            insetBottom={insets.bottom}
+            files={files}
+            index={index}
+            fileId={current.id}
+            swipe={swipeProgress}
+          />
+        </Animated.View>
+      ) : (
+      /* Bottom: dots for position within the group */
       <Animated.View
         pointerEvents={chromeVisible ? 'auto' : 'none'}
         style={[styles.bottomBar, { paddingBottom: insets.bottom + 12 }, dotsStyle]}
       >
         <PageDots count={files.length} index={index} progress={swipeProgress} theme={theme} />
       </Animated.View>
+      )}
 
-      <ActionSheet
-        visible={sheet === 'file'}
-        title="Jump to file"
-        subtitle={`${files.length} in this group`}
-        actions={fileActions}
-        theme={theme}
-        onClose={() => setSheet('none')}
-      />
+      {skin ? (
+        /* A look's Jump to file and Switch group: same choices, numbered rows and a filter. */
+        <>
+          <skin.JumpSheet
+            visible={sheet === 'file'}
+            theme={theme}
+            files={files}
+            index={index}
+            groupId={groupId}
+            groupTitle={currentGroupTitle}
+            onPick={setIndex}
+            onClose={() => setSheet('none')}
+          />
+          <skin.GroupSheet
+            visible={sheet === 'group'}
+            theme={theme}
+            groups={groups}
+            counts={groupCounts}
+            currentId={groupId}
+            onPick={switchGroup}
+            onClose={() => setSheet('none')}
+          />
+        </>
+      ) : (
+        <>
+          <ActionSheet
+            visible={sheet === 'file'}
+            title="Jump to file"
+            subtitle={`${files.length} in this group`}
+            actions={fileActions}
+            theme={theme}
+            onClose={() => setSheet('none')}
+          />
 
-      <ActionSheet
-        visible={sheet === 'group'}
-        title="Switch group"
-        actions={groupActions}
-        theme={theme}
-        onClose={() => setSheet('none')}
-      />
+          <ActionSheet
+            visible={sheet === 'group'}
+            title="Switch group"
+            actions={groupActions}
+            theme={theme}
+            onClose={() => setSheet('none')}
+          />
+        </>
+      )}
 
       <TocSheet
         visible={sheet === 'toc'}
@@ -484,11 +569,15 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
         onClose={() => setSheet('none')}
       />
 
-      <ReaderSettingsSheet
-        visible={sheet === 'display'}
-        theme={theme}
-        onClose={() => setSheet('none')}
-      />
+      {skin ? (
+        <skin.DisplaySheet visible={sheet === 'display'} theme={theme} onClose={() => setSheet('none')} />
+      ) : (
+        <ReaderSettingsSheet
+          visible={sheet === 'display'}
+          theme={theme}
+          onClose={() => setSheet('none')}
+        />
+      )}
 
       {/*
         Anchored under the `⋯` button rather than presented as a sheet: these are
@@ -499,6 +588,15 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
         lines up with the button's, and `top` clears the bar via the same
         constant the bar is built from.
       */}
+      <LookSheet
+        visible={sheet === 'look'}
+        title="Look"
+        subtitle="Restyles the board and the reader"
+        actions={sheet === 'look' ? lookSheetActions(storedLook) : []}
+        theme={theme}
+        onClose={() => setSheet('none')}
+      />
+
       <PopoverMenu
         visible={sheet === 'menu'}
         items={menuItems}
@@ -529,6 +627,8 @@ const styles = StyleSheet.create({
   backBtn: { width: 26, alignItems: 'center', justifyContent: 'center' },
   backGlyph: { color: '#fff', fontSize: 26, fontWeight: '400', lineHeight: 28 },
   toolBtn: { width: 30, height: 34, alignItems: 'center', justifyContent: 'center' },
+  lookTop: { position: 'absolute', top: 0, left: 0, right: 0 },
+  lookBottom: { position: 'absolute', bottom: 0, left: 0, right: 0 },
   bottomBar: {
     position: 'absolute',
     bottom: 0,

@@ -7,7 +7,7 @@ most of the design here is scar tissue, and the reasoning is worth more than the
 diff.
 
 Written 2026-08-29. Companion documents: [README.md](README.md) for using and
-building the app, [docs/RN_ANDROID_SETUP.md](docs/RN_ANDROID_SETUP.md) for the
+building the app, [docs/setup/android-setup.md](docs/setup/android-setup.md) for the
 reusable Android/Expo setup playbook.
 
 ---
@@ -73,7 +73,7 @@ Pinned versions, because on this platform they matter more than usual.
 Reanimated, gesture-handler — are not in the Expo Go binary. Testing on a
 physical phone therefore requires a custom dev build. Deciding this on day one
 avoids discovering it after writing a lot of code. See
-[RN_ANDROID_SETUP.md §9](docs/RN_ANDROID_SETUP.md).
+[android-setup.md §9](docs/setup/android-setup.md).
 
 **2. Two renderer families, not eleven renderers.**
 
@@ -332,7 +332,7 @@ tail -40 build.log
 
 **Lesson.** Never let a pipeline stand between you and an exit code you are about
 to report on. This one is in the playbook as its own numbered section
-([§10](docs/RN_ANDROID_SETUP.md)) because the failure mode is *reporting a false
+([§10](docs/setup/android-setup.md)) because the failure mode is *reporting a false
 success*, which is worse than any build error.
 
 ### 6.3 Files vanished after a force-quit — a silent persistence failure
@@ -731,7 +731,7 @@ persistence change is only verified by force-quitting from recents.
   after the native setup was delivered this way.
 - A native rebuild is required only when adding/removing a native module,
   changing `app.json` plugins or the package name, or upgrading the SDK. See
-  [RN_ANDROID_SETUP.md §16](docs/RN_ANDROID_SETUP.md).
+  [android-setup.md §16](docs/setup/android-setup.md).
 - Memory discipline in the pager: **only the active file is mounted**, so
   memory stays flat regardless of group size
   ([HorizontalPager.tsx:201](src/components/HorizontalPager.tsx#L201)).

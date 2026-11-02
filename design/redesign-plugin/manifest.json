@@ -1,0 +1,9 @@
+{
+  "name": "StackRead redesign sheet",
+  "id": "stackread-redesign-sheet",
+  "api": "1.0.0",
+  "main": "code.js",
+  "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
+  "networkAccess": { "allowedDomains": ["none"] }
+}

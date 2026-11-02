@@ -190,6 +190,10 @@ export function ReaderTransition({ from, closing, onClosed, backdrop, children }
    *
    * It fades rather than appearing, and slightly ahead of the reader, so the
    * board dims into the app background instead of being cut away.
+   *
+   * On close the same fade runs backwards and reveals the board, which `App`
+   * now mounts underneath as soon as the close starts — so the reader folds
+   * back into its card over the real board, not over the window background.
    */
   const backdropStyle = useAnimatedStyle(() => ({
     opacity: interpolate(t.value, [0, 0.5, 1], [0, 1, 1]),

@@ -4,6 +4,9 @@ import Animated, { interpolateColor, useAnimatedStyle } from 'react-native-reani
 import type { Theme } from '../ui/theme'
 import { usePressAnimation } from '../ui/usePressAnimation'
 import { SheetShell } from './SheetShell'
+import { useLookFonts } from '../looks/registry'
+import type { LookFonts } from '../looks/skin'
+import type { IconName } from '../looks/Icon'
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable)
 
@@ -29,10 +32,13 @@ export interface SheetAction {
   /** Rendered dimmed and unpressable. */
   disabled?: boolean
   destructive?: boolean
+  /** Drawn only by the optional looks' sheet (TASKS3); Classic ignores both. */
+  icon?: IconName
+  detail?: string
   onPress: () => void
 }
 
-interface Props {
+export interface ActionSheetProps {
   visible: boolean
   title?: string
   subtitle?: string
@@ -46,10 +52,12 @@ function Item({
   action,
   theme,
   onClose,
+  fonts,
 }: {
   action: SheetAction
   theme: Theme
   onClose: () => void
+  fonts: LookFonts | null
 }) {
   // Tint rather than scale: a full-width row that shrinks on touch looks like
   // it is detaching from the sheet.
@@ -86,28 +94,31 @@ function Item({
                 ? theme.danger
                 : theme.fg,
           },
+          fonts?.body,
         ]}
       >
         {action.label}
       </Text>
 
       {action.meta ? (
-        <Text style={[styles.itemMeta, { color: theme.fgDim }]}>{action.meta}</Text>
+        <Text style={[styles.itemMeta, { color: theme.fgDim }, fonts?.meta]}>{action.meta}</Text>
       ) : null}
     </AnimatedPressable>
   )
 }
 
-export function ActionSheet({ visible, title, subtitle, actions, theme, onClose }: Props) {
+export function ActionSheet({ visible, title, subtitle, actions, theme, onClose }: ActionSheetProps) {
+  // An optional look's type (TASKS3); null in Classic, which keeps the system font.
+  const fonts = useLookFonts()
   return (
     <SheetShell visible={visible} theme={theme} onClose={onClose}>
       {title ? (
         <View style={styles.head}>
-          <Text numberOfLines={1} style={[styles.title, { color: theme.fg }]}>
+          <Text numberOfLines={1} style={[styles.title, { color: theme.fg }, fonts?.title]}>
             {title}
           </Text>
           {subtitle ? (
-            <Text numberOfLines={1} style={[styles.subtitle, { color: theme.fgFaint }]}>
+            <Text numberOfLines={1} style={[styles.subtitle, { color: theme.fgFaint }, fonts?.body]}>
               {subtitle}
             </Text>
           ) : null}
@@ -116,7 +127,7 @@ export function ActionSheet({ visible, title, subtitle, actions, theme, onClose 
 
       <ScrollView style={styles.list} bounces={false}>
         {actions.map((a) => (
-          <Item key={a.key} action={a} theme={theme} onClose={onClose} />
+          <Item key={a.key} action={a} theme={theme} onClose={onClose} fonts={fonts} />
         ))}
       </ScrollView>
     </SheetShell>

@@ -8,7 +8,10 @@ import { getScroll, setScroll, setProgress, getAnchor, setAnchor } from '../stor
 import { usePageNav } from '../store/pageNav'
 import { useSearch } from '../store/search'
 import { useReaderSettings, type ReaderSettings } from '../store/readerSettings'
-import { useTheme, type Theme } from '../ui/theme'
+import { useLook, useTheme, type Theme } from '../ui/theme'
+import { useAppearance } from '../store/appearance'
+import { lookPageColors, readingFontFamily } from '../looks/readingFonts'
+import { loadReadingFontCss } from '../looks/readingFontLoader'
 import { Spring } from '../ui/motion'
 import { LoadingCover } from '../components/LoadingCover'
 import { buildViewerHtml } from './webview/viewerHtml'
@@ -63,8 +66,31 @@ type Payload = {
   streaming?: boolean
 }
 
-/** The subset of reader settings the viewer needs, resolved against the theme. */
-function viewerSettings(s: ReaderSettings, theme: Theme) {
+/**
+ * The subset of reader settings the viewer needs, resolved against the theme.
+ *
+ * `lookFont` is non-null only while an optional look is active (TASKS3 L5):
+ * then the page takes the redesign's reading palettes and the chosen reading
+ * font. In Classic the colours below are computed exactly as before, and the
+ * three look-only fields go out empty, which the viewer reads as "use your own".
+ */
+function viewerSettings(s: ReaderSettings, theme: Theme, lookFont: string | null = null) {
+  if (lookFont !== null) {
+    const p = lookPageColors(s.theme, theme.dark)
+    return {
+      fontSize: s.fontSize,
+      lineHeight: s.lineHeight,
+      margin: s.margin,
+      paper: p.page,
+      ink: p.ink,
+      fontFamily: lookFont,
+      link: p.link,
+      code: p.code,
+    }
+  }
+  // Classic never offers mist or dusk, but one can be stored from a look.
+  const t = s.theme === 'mist' ? 'light' : s.theme === 'dusk' ? 'dark' : s.theme
+  s = { ...s, theme: t }
   const paper =
     s.theme === 'sepia'
       ? '#f4ecd8'
@@ -85,7 +111,7 @@ function viewerSettings(s: ReaderSettings, theme: Theme) {
           ? '#14141a'
           : theme.fg
 
-  return { fontSize: s.fontSize, lineHeight: s.lineHeight, margin: s.margin, paper, ink }
+  return { fontSize: s.fontSize, lineHeight: s.lineHeight, margin: s.margin, paper, ink, fontFamily: '', link: '', code: '' }
 }
 
 /**
@@ -190,6 +216,33 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
   const margin = useReaderSettings((s) => s.margin)
   const readerTheme = useReaderSettings((s) => s.theme)
 
+  /*
+   * The optional looks' reading font (TASKS3 L5). In Classic it is always the
+   * viewer's own, and nothing below sends anything new.
+   *
+   * `fontCss` is the loaded @font-face block: null until known, '' for "none".
+   * The family is only named in the settings once its faces have arrived, so
+   * a document never re-flows twice — once into a fallback, then into the font.
+   */
+  const look = useLook()
+  const storedFont = useAppearance((s) => s.readingFont)
+  const readingFont = look === 'classic' ? 'default' : storedFont
+  const [fontCss, setFontCss] = useState<string | null>(readingFont === 'default' ? '' : null)
+  useEffect(() => {
+    if (readingFont === 'default') {
+      setFontCss('')
+      return
+    }
+    let live = true
+    void loadReadingFontCss(readingFont).then((css) => {
+      if (live) setFontCss(css ?? '')
+    })
+    return () => {
+      live = false
+    }
+  }, [readingFont])
+  const lookFont = look === 'classic' ? null : fontCss ? readingFontFamily(readingFont) : ''
+
   /**
    * The cache hit this mount started from, if there was one.
    *
@@ -217,6 +270,7 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
     return { ...cached, scroll: getScroll(file.id), anchor: getAnchor(file.id), settings: viewerSettings(
       { fontSize, lineHeight, margin, theme: readerTheme },
       theme,
+      lookFont,
     ) }
   })
   /**
@@ -283,8 +337,8 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
 
 
   const settings = useMemo(
-    () => viewerSettings({ fontSize, lineHeight, margin, theme: readerTheme }, theme),
-    [fontSize, lineHeight, margin, readerTheme, theme],
+    () => viewerSettings({ fontSize, lineHeight, margin, theme: readerTheme }, theme, lookFont),
+    [fontSize, lineHeight, margin, readerTheme, theme, lookFont],
   )
 
   // Animated so entering fullscreen expands the page rather than snapping it.
@@ -883,6 +937,25 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
       if (timer) clearTimeout(timer)
     }
   }, [rendered, active])
+
+  /*
+   * The reading font's faces, sent once per font per page load (TASKS3 L5).
+   *
+   * Declared before the settings push below so that, on the commit where a font
+   * arrives, its @font-face is installed before the settings that name it.
+   * Tracks what this page already has, so Classic — where `fontCss` is always
+   * '' — never sends anything, and a reload (which empties the page) resends.
+   */
+  const sentFont = useRef('')
+  useEffect(() => {
+    if (!rendered) {
+      sentFont.current = ''
+      return
+    }
+    if (!webRef.current || fontCss === null || fontCss === sentFont.current) return
+    webRef.current.postMessage(JSON.stringify({ type: 'font', css: fontCss }))
+    sentFont.current = fontCss
+  }, [rendered, fontCss])
 
   // Typography changes are pushed as a style-only update.
   useEffect(() => {

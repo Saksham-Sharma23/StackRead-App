@@ -1,12 +1,19 @@
 import { useColorScheme } from 'react-native'
 import { useMemo } from 'react'
 
+import { paletteTheme, type Look } from '../looks/appearance'
+import { useResolvedAppearance } from '../store/appearance'
+
 /**
  * Single palette, resolved from the OS colour scheme.
  *
  * `app.json` sets `userInterfaceStyle: "automatic"`, so this follows the phone's
  * system setting. Every colour used anywhere in the app comes from here — no
  * literal hex outside this file, so dark mode can't drift out of sync.
+ *
+ * These two are the **Classic** look. The optional looks (TASKS3) draw from
+ * looks/palettes.ts instead, and `useTheme()` only reaches for those when the
+ * user has Pro and has picked one — so Classic stays exactly as it is here.
  */
 
 export interface Theme {
@@ -126,9 +133,28 @@ const dark: Theme = {
   navScrimEdge: 'rgba(255,255,255,0.06)',
 }
 
+/**
+ * The palette to draw with.
+ *
+ * Classic — the default, and the only look without Pro — returns the same
+ * `light` / `dark` objects as always, so nothing about it changes. Any other
+ * look returns a theme built from its palette (looks/appearance.ts), which has
+ * the same shape, so existing components draw with it unchanged.
+ */
 export function useTheme(): Theme {
   const scheme = useColorScheme()
-  return useMemo(() => (scheme === 'dark' ? dark : light), [scheme])
+  const resolved = useResolvedAppearance(scheme === 'dark')
+  const themeName = resolved.look === 'classic' ? null : resolved.theme
+  return useMemo(
+    () => (themeName ? paletteTheme(themeName) : scheme === 'dark' ? dark : light),
+    [scheme, themeName],
+  )
+}
+
+/** The look in effect: Classic unless the user has Pro and chose another. */
+export function useLook(): Look {
+  const scheme = useColorScheme()
+  return useResolvedAppearance(scheme === 'dark').look
 }
 
 /** Card geometry, shared by the row and the drag layer so they cannot disagree. */

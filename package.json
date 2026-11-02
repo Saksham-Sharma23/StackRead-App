@@ -1,6 +1,6 @@
 {
   "name": "stackread",
-  "version": "1.5.0",
+  "version": "2.0.0",
   "license": "UNLICENSED",
   "main": "index.ts",
   "dependencies": {
@@ -9,6 +9,7 @@
     "expo-dev-client": "~57.0.16",
     "expo-document-picker": "~57.0.1",
     "expo-file-system": "~57.0.6",
+    "expo-font": "~57.0.4",
     "expo-haptics": "~57.0.2",
     "expo-image": "~57.0.3",
     "expo-image-manipulator": "~57.0.14",
@@ -29,6 +30,7 @@
     "react-native-pdf": "^7.0.5",
     "react-native-reanimated": "4.5.1",
     "react-native-safe-area-context": "~5.7.0",
+    "react-native-svg": "15.15.4",
     "react-native-view-shot": "5.1.0",
     "react-native-webview": "13.16.1",
     "react-native-worklets": "0.10.1",

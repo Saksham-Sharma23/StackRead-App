@@ -9,9 +9,11 @@ import { ReducedMotionConfig, ReduceMotion } from 'react-native-reanimated'
 import type { FileEntry } from './src/types'
 import { LibraryScreen } from './src/screens/LibraryScreen'
 import { ReaderTransition } from './src/components/ReaderTransition'
+import { ThemeVeil } from './src/ui/ThemeVeil'
+import { useLastRead } from './src/store/lastRead'
 import type { OpenRect } from './src/ui/openTransition'
 import { useLibrary } from './src/store/library'
-import { useTheme } from './src/ui/theme'
+import { useLook, useTheme } from './src/ui/theme'
 import { useAppLifecycle } from './src/ui/useAppLifecycle'
 import { perf, reportStartup } from './src/ui/perf'
 import { installCrashLog } from './src/ui/crashLog'
@@ -89,6 +91,7 @@ SplashScreen.preventAutoHideAsync().catch(() => {
 
 function Root() {
   const theme = useTheme()
+  const look = useLook()
   const [reading, setReading] = useState<FileEntry | null>(null)
 
   /*
@@ -190,7 +193,11 @@ function Root() {
   }, [])
 
   /** Asks the reader to fold away. The unmount happens in `handleClosed`. */
-  const handleClose = useCallback(() => setClosing(true), [])
+  const handleClose = useCallback(() => {
+    // Stamped before the board mounts, so the card for the file being left can ring itself.
+    useLastRead.getState().markReturn()
+    setClosing(true)
+  }, [])
 
   /*
    * Files from "Open with" and "Share" (`storage/incoming`), opened like a tap
@@ -240,23 +247,28 @@ function Root() {
 
   return (
     <>
-      <StatusBar style={reading ? 'light' : theme.dark ? 'light' : 'dark'} />
       {/*
-        The board stays mounted only while there is no reader.
-
-        Keeping both alive would let the board scale away underneath the reader,
-        which is the conventional companion to this transition. It is
-        deliberately not done: the cost is every card's image instance and MMKV
-        subscription held alive for a whole reading session, to animate
-        something that spends almost all of the transition behind an opaque
-        reader.
-
-        The trade has one consequence, and it was a visible bug before it was
-        handled: with the board gone, whatever the reader does not cover is the
-        Android *window* background — the splash navy — so the transition
-        flashed blue at both ends. `ReaderTransition` paints its own opaque
-        backdrop for exactly this reason.
+        Classic's reader bar is always near-black, so it takes light icons. A
+        look's reader bar is the look's own background — cream in Paper, for
+        one — so it takes icons that suit the theme, like the board does.
       */}
+      <StatusBar style={reading && look === 'classic' ? 'light' : theme.dark ? 'light' : 'dark'} />
+      {/*
+        The board is unmounted while a file is open, and comes back the moment
+        the reader starts to close — not when it finishes.
+
+        Unmounted while reading, deliberately: keeping it alive would hold every
+        card's image instance and MMKV subscription for a whole session, behind
+        an opaque reader.
+
+        Back while closing, so the reader folds back into its card *over the
+        real board*. It used to come back only after the fold, and the fold's
+        backdrop fades out in its second half — so the end of every close showed
+        the Android window background, the splash navy, and then the board
+        popped in. The board is the first child and the reader is drawn over
+        it, so the board keeps its slot (and its state) when the reader goes.
+      */}
+      {(!reading || closing) && <LibraryScreen onOpenFile={handleOpenFile} />}
       {reading ? (
         <ReaderTransition
           from={openRect.current}
@@ -302,11 +314,12 @@ function Root() {
             </Suspense>
           </ErrorBoundary>
         </ReaderTransition>
-      ) : (
-        <LibraryScreen onOpenFile={handleOpenFile} />
-      )}
+      ) : null}
 
       <CoverFactoryHost reading={reading !== null} />
+
+      {/* Dissolves the old background colour away when the look or theme changes. */}
+      <ThemeVeil theme={theme} />
 
       {receiving !== null && (
         <View style={[styles.receiving, { backgroundColor: theme.overlay }]} pointerEvents="none">

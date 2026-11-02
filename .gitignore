@@ -81,3 +81,6 @@ android_screenshots
 # Signing passwords are read from the environment (see credentials/README.md);
 # a generated gradle.properties must never carry them into a commit.
 android/gradle.properties
+
+
+.claude/
