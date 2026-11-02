@@ -292,6 +292,18 @@ the Appearance screen (L2).
 - ☐ Suggested, not done: recolour the Android window per theme (expo-system-ui,
   needs a rebuild); predictive back (Android 14+).
 
+## Fix — a tap selected a word (2026-11-02, all looks and Classic)
+
+The reader's tap gesture (show/hide the bars) claims the touch as the finger
+lifts, so the WebView never saw the lift: logged on device as touchstart, then
+contextmenu ~490 ms later and a selected word, then touchcancel. The reader now
+tells the page each tap it recognised ([store/readerTap.ts](src/store/readerTap.ts)
+→ WebViewRenderer → `{type:'tap'}`), and the page refuses the long press — and
+clears any selection — for that touch only ("taps are not long presses" in
+viewerHtml.ts). A real long press is a new touch and selects as before. Checked
+on device: tap shows/hides the bars with no selection; a 1 s press selects with
+the copy toolbar; a tap afterwards clears it.
+
 ## L9 — Pro for real — ☐
 
 ROADMAP §6, unchanged: RevenueCat (`react-native-purchases`), one `pro`

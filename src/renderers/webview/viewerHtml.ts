@@ -1326,6 +1326,46 @@ ${
    * removes it. Re-measures once the face has actually loaded, since a new
    * typeface changes every line break.
    */
+  /* ==================== taps are not long presses ====================
+   *
+   * A tap on the page selected a word. The host's tap gesture (the one that
+   * shows and hides the reader's bars) claims the touch when the finger lifts,
+   * so this page never sees the lift: it sees touchstart, then nothing, and
+   * after the long-press delay decides the finger is still down -- context
+   * menu, a selected word -- before a touchcancel finally arrives. Measured on
+   * device: touchstart, contextmenu about 490ms later, then the cancel.
+   *
+   * The host knows it was a tap and says so ({type:'tap'}). That touch -- and
+   * only that touch, by id -- then has its long press refused and any
+   * selection it made cleared. A real long press is a new touch, so selecting
+   * text by holding a finger down works exactly as before.
+   */
+  var touchId = 0;
+  var tappedTouch = -1;
+
+  document.addEventListener('touchstart', function () { touchId++; }, { passive: true, capture: true });
+
+  function isPhantom() { return tappedTouch === touchId; }
+
+  function clearPhantomSelection() {
+    var s = window.getSelection();
+    if (s && !s.isCollapsed) s.removeAllRanges();
+  }
+
+  function noteHostTap() {
+    tappedTouch = touchId;
+    // The message can arrive after the long press already fired.
+    clearPhantomSelection();
+  }
+
+  document.addEventListener('contextmenu', function (e) {
+    if (isPhantom()) e.preventDefault();
+  }, true);
+
+  document.addEventListener('selectionchange', function () {
+    if (isPhantom()) clearPhantomSelection();
+  });
+
   function installFont(css) {
     var el = document.getElementById('sr-font');
     if (!el) {
@@ -1624,6 +1664,7 @@ ${
       else if (msg.type === 'seekHref') seekToHref(msg.href);
       else if (msg.type === 'settings') applySettings(msg.settings);
       else if (msg.type === 'font') installFont(msg.css);
+      else if (msg.type === 'tap') noteHostTap();
       else if (msg.type === 'image') attachImage(msg.token, msg.mime, msg.data);
       else if (msg.type === 'search') runSearch(msg.query, msg);
       else if (msg.type === 'searchNext') goToMatch(matchIndex + 1);

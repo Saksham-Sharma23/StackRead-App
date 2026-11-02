@@ -10,6 +10,7 @@ import { useSearch } from '../store/search'
 import { useReaderSettings, type ReaderSettings } from '../store/readerSettings'
 import { useLook, useTheme, type Theme } from '../ui/theme'
 import { useAppearance } from '../store/appearance'
+import { useReaderTap } from '../store/readerTap'
 import { lookPageColors, readingFontFamily } from '../looks/readingFonts'
 import { loadReadingFontCss } from '../looks/readingFontLoader'
 import { Spring } from '../ui/motion'
@@ -956,6 +957,21 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
     webRef.current.postMessage(JSON.stringify({ type: 'font', css: fontCss }))
     sentFont.current = fontCss
   }, [rendered, fontCss])
+
+  /*
+   * A tap the reader recognised, passed to the page on screen.
+   *
+   * The reader's tap gesture takes the touch from the WebView as the finger
+   * lifts, so the page never sees the lift and would turn every tap into a
+   * long press — a selected word. Told it was a tap, the page refuses that one
+   * long press ("taps are not long presses" in viewerHtml.ts). Only the active
+   * renderer: a neighbour off screen has no touch to refuse.
+   */
+  const tapCount = useReaderTap((s) => s.n)
+  useEffect(() => {
+    if (!tapCount || !active || !rendered || !webRef.current) return
+    webRef.current.postMessage(JSON.stringify({ type: 'tap' }))
+  }, [tapCount, active, rendered])
 
   // Typography changes are pushed as a style-only update.
   useEffect(() => {

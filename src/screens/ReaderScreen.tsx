@@ -27,6 +27,7 @@ import { useTheme } from '../ui/theme'
 import { lookSheetActions, useSkin } from '../looks/registry'
 import { useAppearance } from '../store/appearance'
 import { useLastRead } from '../store/lastRead'
+import { useReaderTap } from '../store/readerTap'
 import { Spring } from '../ui/motion'
 import { useFullscreen } from '../ui/useFullscreen'
 
@@ -209,6 +210,9 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
 
   const toggleChrome = useCallback(() => {
     setChromeVisible((v) => !v)
+    // Tell the page this touch was a tap, so it does not become a long press
+    // and select a word (store/readerTap).
+    useReaderTap.getState().bump()
   }, [])
 
   /*
