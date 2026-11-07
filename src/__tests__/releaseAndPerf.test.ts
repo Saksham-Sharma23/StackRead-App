@@ -58,7 +58,8 @@ test('E3: only small disk entries are read during the first render', () => {
 test('E3: a large disk entry still beats a re-parse', () => {
   const renderer = source('renderers/WebViewRenderer.tsx')
   const disk = renderer.indexOf('await readPreparedAsync(file.id')
-  const parse = renderer.indexOf('await prepareFile(file)')
+  // The parse goes through the shared, cached entry point (`prepareOnce.ts`).
+  const parse = renderer.indexOf("await prepareAndCache(file, 'user')")
   assert.ok(disk > 0 && parse > disk, 'the async disk read must come before preparing from scratch')
 })
 

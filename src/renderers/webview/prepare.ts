@@ -11,6 +11,7 @@ import { mimeForImage } from './bytes'
 import { openArchive, type ArchiveHandle, type OffloadLane } from './offload'
 import { beginPrepare, now, type PrepareTrace } from '../../ui/perf'
 import { sanitizeHtml } from './sanitize'
+import { SHEET_LIMITS, buildWorkbookHtml, readSheet, type SheetInput } from './sheetGrid'
 import {
   CHARS_PER_PAGE,
   CHARS_PER_PAGE_DOCX,
@@ -49,6 +50,15 @@ export interface Prepared {
   totalPages: number
   /** Chapter list, for formats that carry one. */
   toc?: TocEntry[]
+  /**
+   * The document's own stylesheet, already normalised (`bookCss.ts`), with
+   * any fonts inlined as `data:` URIs. EPUB only today.
+   *
+   * Carried beside `content` rather than inside it: the viewer's sanitiser
+   * removes `<style>` elements from content, and installs this as a stylesheet
+   * of its own instead.
+   */
+  css?: string
   /**
    * Content held back from the first paint, delivered afterwards.
    *
@@ -189,20 +199,15 @@ function naturalCompare(a: string, b: string): number {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
 }
 
-/** 0 → A, 25 → Z, 26 → AA … the spreadsheet column naming scheme. */
-export function columnLetter(index: number): string {
-  let n = index
-  let out = ''
-  do {
-    out = String.fromCharCode(65 + (n % 26)) + out
-    n = Math.floor(n / 26) - 1
-  } while (n >= 0)
-  return out
+/** Lets touches and frames through between long synchronous steps. */
+function yieldToUi(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 /**
  * Spreadsheets -> a real grid: column letters across the top, row numbers down
- * the left, both pinned while scrolling either axis.
+ * the left, both pinned while scrolling either axis. The grid itself is built
+ * by `sheetGrid.ts`, which also bounds it — see there for the limits and why.
  *
  * Built by hand rather than with `XLSX.utils.sheet_to_html`, which emits no
  * `<thead>` for the sticky header to attach to and no row/column headers at all.
@@ -210,6 +215,13 @@ export function columnLetter(index: number): string {
  * Cells are read with `cellDates` and converted with `raw: false`, which is what
  * makes a date show as `15/01/2024` rather than the underlying Excel serial
  * number `45306`. Reading raw values was a real data-correctness bug.
+ *
+ * ## Still on the JS thread
+ *
+ * SheetJS is a large library that cannot run on a worklet runtime, so parsing
+ * stays here. `sheetRows` is what keeps that bounded: the parser stops reading
+ * cells past the row limit instead of materialising every row of a 40 MB file,
+ * and the work yields between sheets so one big workbook is not one long freeze.
  */
 async function prepareSheet(bytes: Uint8Array): Promise<Prepared> {
   /*
@@ -226,89 +238,28 @@ async function prepareSheet(bytes: Uint8Array): Promise<Prepared> {
    */
   const XLSX = await import('xlsx')
 
-  const wb = XLSX.read(bytes, { type: 'array', cellDates: true })
+  // One row past the limit, so `sheetGrid` can tell "exactly the limit" from
+  // "more than it" without a total the parser never counted.
+  const wb = XLSX.read(bytes, { type: 'array', cellDates: true, sheetRows: SHEET_LIMITS.rows + 1 })
+  await yieldToUi()
 
-  const tabs: string[] = []
-  const sheets: string[] = []
-
-  wb.SheetNames.forEach((name, index) => {
+  const sheets: SheetInput[] = []
+  for (const name of wb.SheetNames) {
     const sheet = wb.Sheets[name]
-    if (!sheet) return
-
-    const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
-      header: 1,
-      blankrows: true,
-      defval: '',
-      // Formatted values, so dates/currency/percentages read as authored.
-      raw: false,
-    })
-    if (!rows.length) return
-
-    // Width comes from the declared range where present, so trailing empty
-    // columns still get their letter and the grid lines up with Excel.
-    const declared = sheet['!ref'] ? XLSX.utils.decode_range(sheet['!ref']) : null
-    const widest = Math.max(
-      declared ? declared.e.c + 1 : 0,
-      rows.reduce((max, r) => Math.max(max, r.length), 0),
-    )
-
-    // Merged regions: the top-left cell spans, the covered cells are omitted.
-    const merges = sheet['!merges'] ?? []
-    const spanAt = new Map<string, { rs: number; cs: number }>()
-    const covered = new Set<string>()
-    for (const m of merges) {
-      spanAt.set(`${m.s.r}:${m.s.c}`, { rs: m.e.r - m.s.r + 1, cs: m.e.c - m.s.c + 1 })
-      for (let r = m.s.r; r <= m.e.r; r++) {
-        for (let c = m.s.c; c <= m.e.c; c++) {
-          if (r !== m.s.r || c !== m.s.c) covered.add(`${r}:${c}`)
-        }
-      }
-    }
-
-    const letters = Array.from(
-      { length: widest },
-      (_, c) => `<th class="sr-colhead">${columnLetter(c)}</th>`,
-    ).join('')
-
-    const body = rows
-      .map((row, r) => {
-        const cells: string[] = []
-        for (let c = 0; c < widest; c++) {
-          if (covered.has(`${r}:${c}`)) continue
-          const span = spanAt.get(`${r}:${c}`)
-          const attrs =
-            (span?.rs && span.rs > 1 ? ` rowspan="${span.rs}"` : '') +
-            (span?.cs && span.cs > 1 ? ` colspan="${span.cs}"` : '')
-          const v = c < row.length ? row[c] : ''
-          cells.push(`<td${attrs}>${escapeHtml(v == null ? '' : String(v))}</td>`)
-        }
-        // Row number pinned to the left, as in every spreadsheet.
-        return `<tr><th class="sr-rowhead">${r + 1}</th>${cells.join('')}</tr>`
-      })
-      .join('')
-
-    const active = index === 0 ? ' active' : ''
-    tabs.push(
-      `<button class="sr-tab${active}" data-sheet="${index}">${escapeHtml(name)}</button>`,
-    )
-    sheets.push(
-      `<div class="sr-sheet${active}" data-sheet="${index}">` +
-        `<div class="sr-scroll-x"><table class="sr-grid">` +
-        `<thead><tr><th class="sr-corner"></th>${letters}</tr></thead>` +
-        `<tbody>${body}</tbody>` +
-        `</table></div></div>`,
-    )
-  })
+    if (!sheet) continue
+    // Bounded to the column limit — see `readSheet` for the two SheetJS traps.
+    const read = readSheet(XLSX.utils, name, sheet)
+    if (read) sheets.push(read)
+    await yieldToUi()
+  }
 
   if (!sheets.length) throw new Error('This workbook has no readable sheets')
-
-  const strip = sheets.length > 1 ? `<div class="sr-tabs">${tabs.join('')}</div>` : ''
 
   // `flow`: a grid has no pages, so the reader hides the page indicator and
   // navigation happens through the tabs instead.
   return {
     format: 'html',
-    content: `${strip}${sheets.join('')}`,
+    content: buildWorkbookHtml(sheets).content,
     mode: 'flow',
     totalPages: 0,
   }
@@ -658,6 +609,7 @@ async function prepareByFormat(
       return {
         format: 'epub',
         content: book.html,
+        css: book.css || undefined,
         mode: 'paper',
         totalPages: book.totalPages,
         toc: book.toc,

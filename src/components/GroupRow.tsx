@@ -11,6 +11,7 @@ import { Duration, Ease, layoutTransition } from '../ui/motion'
 import { AddTile } from './AddTile'
 import { MoreTile } from './MoreTile'
 import { DraggableCard } from './DraggableCard'
+import { GlyphIcon } from './GlyphIcon'
 import type { Skin } from '../looks/skin'
 
 /**
@@ -49,6 +50,8 @@ interface Props {
   onFileMenu: (file: FileEntry) => void
   onAddFiles: (groupId: string) => void
   onGroupMenu: (group: Group) => void
+  /** A card held and released without dragging: preview that file. */
+  onPreviewFile?: (fileId: string) => void
   /**
    * The optional look drawing this row (TASKS3). Absent in Classic, which
    * renders exactly as before; present, it supplies the header, card, add tile
@@ -57,7 +60,7 @@ interface Props {
   skin?: Skin
 }
 
-function GroupRowImpl({ group, theme, onOpenFile, onFileMenu, onAddFiles, onGroupMenu, skin }: Props) {
+function GroupRowImpl({ group, theme, onOpenFile, onFileMenu, onAddFiles, onGroupMenu, onPreviewFile, skin }: Props) {
   /*
    * Ids, not entries.
    *
@@ -187,7 +190,7 @@ function GroupRowImpl({ group, theme, onOpenFile, onFileMenu, onAddFiles, onGrou
           style={styles.groupMenuBtn}
           accessibilityLabel={`Options for group ${group.title}`}
         >
-          <Text style={[styles.groupMenuGlyph, { color: theme.fgDim }]}>⋯</Text>
+          <GlyphIcon name="more" glyph="⋯" color={theme.fgDim} size={20} glyphStyle={styles.groupMenuGlyph} />
         </Pressable>
       </View>
       )}
@@ -218,6 +221,7 @@ function GroupRowImpl({ group, theme, onOpenFile, onFileMenu, onAddFiles, onGrou
             onMenu={onFileMenu}
             onReorder={handleReorder}
             onDragStateChange={setDragging}
+            onPreview={onPreviewFile}
             Card={skin?.Card}
           />
         ))}

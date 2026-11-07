@@ -31,6 +31,15 @@ import type { LookCardProps } from '../looks/skin'
 
 const SLOT = CARD.width + CARD.gap
 
+/**
+ * How far a lifted card's finger may wander and still count as holding still.
+ *
+ * Press-and-hold, then release, shows the card's preview; press-and-hold, then
+ * move, drags it. A finger is never perfectly still, so the drag only starts
+ * past this — about the touch slop Android itself uses for a scroll.
+ */
+const HOLD_SLOP = 8
+
 interface Props {
   /** The card's file, by id — the entry is subscribed by `FileCard` itself. */
   fileId: string
@@ -50,6 +59,8 @@ interface Props {
    * which `SLOT` above depends on.
    */
   Card?: ComponentType<LookCardProps>
+  /** A long press released without dragging: show this file's preview. */
+  onPreview?: (fileId: string) => void
 }
 
 export function DraggableCard({
@@ -63,9 +74,14 @@ export function DraggableCard({
   onDragStateChange,
   animateLayout = true,
   Card,
+  onPreview,
 }: Props) {
   const offsetX = useSharedValue(0)
   const lifted = useSharedValue(0)
+  /** 1 once the lifted card has actually started to move — a drag, not a hold. */
+  const moved = useSharedValue(0)
+  /** Where the finger went down, so the drag can wait out `HOLD_SLOP`. */
+  const downX = useSharedValue(0)
 
   const begin = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
@@ -83,21 +99,61 @@ export function DraggableCard({
     [onDragStateChange, onReorder],
   )
 
+  /*
+   * A hold that ended without a drag. The row may scroll again, and — if the
+   * finger was lifted rather than the touch cancelled — the preview opens.
+   */
+  const endHold = useCallback(
+    (released: boolean) => {
+      onDragStateChange(false)
+      if (released) onPreview?.(fileId)
+    },
+    [fileId, onDragStateChange, onPreview],
+  )
+
   const longPress = Gesture.LongPress()
     .minDuration(220)
+    // The default 10pt tolerance stays: wider, and a slow scroll of the row
+    // would lift a card part-way through it. It already exceeds HOLD_SLOP.
     .onStart(() => {
+      moved.value = 0
       // The one place a visible overshoot is wanted: the small bounce is what
       // communicates "picked up".
       lifted.value = withSpring(1, Spring.playful)
       runOnJS(begin)()
     })
+    .onFinalize((_e, success) => {
+      /*
+       * Lifted, and never dragged: a press-and-hold. The card goes back down
+       * and the preview opens.
+       *
+       * Before this, nothing ended a hold that never moved — the card stayed
+       * lifted and its row stayed unscrollable until it was touched again.
+       */
+      if (lifted.value > 0 && moved.value === 0) {
+        lifted.value = withSpring(0, Spring.snappy)
+        runOnJS(endHold)(success)
+      }
+    })
 
   const pan = Gesture.Pan()
     // Only meaningful once the long-press has lifted the card.
     .manualActivation(true)
-    .onTouchesMove((_, state) => {
-      if (lifted.value > 0) state.activate()
-      else state.fail()
+    .onTouchesDown((e) => {
+      downX.value = e.allTouches[0]?.absoluteX ?? 0
+    })
+    .onTouchesMove((e, state) => {
+      // Moving before the lift is a scroll of the row, never a drag.
+      if (lifted.value === 0) {
+        state.fail()
+        return
+      }
+      // Lifted: a drag only once the finger has really moved.
+      const x = e.allTouches[0]?.absoluteX ?? downX.value
+      if (Math.abs(x - downX.value) > HOLD_SLOP) state.activate()
+    })
+    .onStart(() => {
+      moved.value = 1
     })
     .onUpdate((e) => {
       // X only. Vertical movement is deliberately ignored so the drag cannot

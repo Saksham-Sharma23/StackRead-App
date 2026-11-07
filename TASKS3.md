@@ -5,9 +5,10 @@ Adds the redesign in [design/redesign-plugin](design/redesign-plugin/README.md)
 looks and colour themes**, sold later as Pro. The app as it is today becomes the
 **Classic** look, and stays the default.
 
-**Status: L0, L1, L3–L8 built — 553 tests pass. Needs a native rebuild (L1:
-SVG module and 28 embedded font faces), then the on-device checks under L6–L8.
-L2 (full Appearance screen) and L9 (billing) not started.**
+**Status: L0–L8 built (L2 on 2026-11-07, with Classic icons and the card
+preview) — 626 tests pass. Needs a native rebuild (L1: SVG module and 28
+embedded font faces), then the on-device checks under L2 and L6–L8. L9
+(billing) not started.**
 
 **The paywall is off** (decided 2026-11-02): every look is open to everyone in
 every build while the looks are being made. `PAYWALL_ENABLED` in
@@ -109,18 +110,47 @@ The looks and react-native-svg are **not** in the startup graph: the registry
 loads each look on first use (pinned in `startupBundle.test.ts`), so Classic
 launches exactly as before.
 
-## L2 — Appearance screen — ☐
+## L2 — Appearance screen — ☑ built (2026-11-07, device check pending)
 
-- ◐ **L2-1 Entry** — a "Look…" row is already the first row of the board's ⋯
-  (Library) sheet, opening a plain list of looks. L2 replaces that list with the
-  Appearance screen. The row is the only Classic change in the series.
-- ☐ **L2-2 Screen** — look tiles with previews, colour swatches, the two toggles
-  from the sheet. Locked tiles show a lock; tapping one opens a placeholder Pro
-  sheet ("Coming soon", plus "Unlock (dev)" in dev builds).
-- ☐ **L2-3 Dev Pro switch** — on the Appearance screen in `__DEV__` builds only.
-- ☐ **L2-4 Interim result** — with Pro on and a colour theme chosen, today's
-  components already recolour through `useTheme()`. That is the check that L0
-  is wired correctly.
+- ☑ **L2-1 Entry** — the board's ⋯ (Library) sheet row is now **Appearance…**,
+  and the reader's ⋯ menu item is **Appearance**; both open the same screen
+  ([screens/AppearanceScreen.tsx](src/screens/AppearanceScreen.tsx)), loaded on
+  first open so it stays out of the startup graph.
+- ☑ **L2-2 Screen** — a tile per look drawing a miniature board in that look's
+  own type, corners and colours (the look in use shows its chosen theme; the
+  others show what choosing them gives — `previewTheme` in
+  looks/appearance.ts); "Match phone light / dark" with Light and Dark swatch
+  rows, or a single Theme row, over all eight app themes; the reading fonts,
+  each named in its own face. In Classic the colour and font sections say why
+  they do not apply instead. Locked tiles (paywall on, no Pro) show PRO and
+  explain on tap, with "Unlock (dev)" in dev builds.
+- ☑ **L2-3 Dev Pro switch** — at the bottom of the screen, `__DEV__` only.
+- ☐ **L2-4 Device check** — every look and theme from the screen, follow-system
+  in both phone modes, a reading font with a long EPUB open, back button.
+
+## Classic icons — ☑ built (2026-11-07, user request; changes Classic)
+
+Classic's text glyphs (‹ ⋯ ☰ Aa ⌕ ⌄ + ✕) are now the SVG icon set, through
+[components/GlyphIcon.tsx](src/components/GlyphIcon.tsx): reader bar, ⋯ menu,
+search bar, dropdown chevrons, card and group ⋯, the add tile, library search,
+and Classic's sheet rows (which already carried icon names). This is a
+deliberate exception to rule 1 ("Classic does not change"), asked for by the
+user. Two safeguards keep Classic's launch and old builds as they were
+([ui/icons.ts](src/ui/icons.ts)): the board shows its glyphs until the app is
+idle, then the icons replace them inside the same box (nothing moves); and a
+build without react-native-svg's native module keeps the glyphs for good. The
+reader and Appearance load the icons at once. One app-only icon was added,
+`select` (a text cursor, for PDF "Select text"); it is not in the Figma sheet.
+
+## Card preview — ☑ built (2026-11-07)
+
+Press and hold a card, then let go without moving: a preview opens
+([components/CardPreview.tsx](src/components/CardPreview.tsx)) — the cover,
+format · size · group, reading progress, the opening lines (text formats from
+the cards' own bounded read; PDFs from page one via `pdf-text`), and Open /
+Options. Hold and *move* still drags to reorder: the drag now starts past an
+8 pt slop (`HOLD_SLOP` in DraggableCard). This also fixed a hold that never
+moved leaving the card lifted and its row unscrollable.
 
 **Done when:** you can switch theme with the dev switch on, and Classic comes
 back the moment it is off.

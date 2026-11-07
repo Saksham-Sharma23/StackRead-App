@@ -1,12 +1,11 @@
 import { InteractionManager } from 'react-native'
-import { File } from 'expo-file-system'
 
 import type { FileEntry } from '../../types'
-import { LIBRARY_DIR } from '../../storage/paths'
 import { isWebViewFormat } from '../types'
-import { prepareFile } from './prepare'
-import { hasPrepared, setPrepared, setPinned } from './prepareCache'
-import { writePrepared } from './diskCache'
+import { hasPrepared, setPinned } from './prepareCache'
+import { preparing } from './inflight'
+import { prepareAndCache } from './prepareOnce'
+import { createLatestQueue } from './latestQueue'
 import { hasPrefetchFailed, notePrefetchFailure } from './prefetchState'
 
 /**
@@ -30,8 +29,8 @@ import { hasPrefetchFailed, notePrefetchFailure } from './prefetchState'
  *
  *  - `InteractionManager.runAfterInteractions` defers until animations settle,
  *    so a prefetch never competes with the swipe that triggered it.
- *  - A module-level `busy` flag serialises the work: at most one parse is ever
- *    in flight, app-wide.
+ *  - A one-at-a-time queue serialises the work: at most one prefetch parse is
+ *    ever in flight, and the newest request runs when it ends.
  *  - Each step re-checks whether its target is still wanted, so changing files
  *    mid-prefetch abandons the old queue instead of finishing it.
  *
@@ -51,23 +50,21 @@ import { hasPrefetchFailed, notePrefetchFailure } from './prefetchState'
 const RADIUS = 1
 
 /**
- * Serialises prefetching: at most one background parse in flight.
+ * Serialises prefetching: at most one background parse in flight, and the
+ * newest request runs as soon as the current parse ends.
  *
- * Note what this does and does not cover now that parsing genuinely yields
- * (see `offload.ts`). It serialises *prefetches* against each other, which is
- * what stops a fast swipe through a group queuing a backlog of parses. It does
- * not block a parse the user actually asked for: opening a file goes through
- * `WebViewRenderer`, which does not consult this flag, so a prefetch and a real
- * open can overlap.
+ * This was a `busy` flag, and a request that found it set returned for good —
+ * so after a fast swipe the new neighbours were never warmed, and the next
+ * swipe re-parsed in front of the user. The queue keeps the flag's guarantee
+ * (no two speculative parses at once, no backlog for files swiped past) and
+ * runs the latest request instead of dropping it. See `latestQueue.ts`.
  *
- * That overlap is safe and deliberate, and it is now genuinely concurrent:
- * prefetches run on their own worklet runtime (`offload.ts`), so a speculative
- * parse cannot queue ahead of a file the user actually opened. Previously both
- * shared one runtime that processes in order, which meant this module's promise
- * — never block the user's open — held at this level and was broken one level
- * down.
+ * It does not block a parse the user actually asked for: opening a file goes
+ * through `WebViewRenderer`, which joins a prefetch already parsing that file
+ * (`prepareOnce.ts`) and otherwise parses on its own worklet runtime
+ * (`offload.ts`), so a speculative parse never queues ahead of a real open.
  */
-let busy = false
+const queue = createLatestQueue()
 
 /**
  * Generation counter, bumped whenever the target changes.
@@ -115,22 +112,29 @@ export function prefetchAround(files: FileEntry[], index: number): void {
       // PDFs and images are drawn natively from disk, so there is no prepared
       // string for them to cache and nothing for a prefetch to do.
       if (!isWebViewFormat(file.format)) continue
-      if (hasPrepared(file.id) || hasPrefetchFailed(file.id)) continue
+      // Already being parsed — usually because the user opened it — needs no second run.
+      if (hasPrepared(file.id) || preparing.has(file.id) || hasPrefetchFailed(file.id)) continue
       targets.push(file)
     }
   }
 
   if (!targets.length) return
 
-  void InteractionManager.runAfterInteractions(async () => {
+  queue.schedule(async () => {
+    // Behind any animation in progress, so a prefetch never competes with the
+    // swipe that triggered it.
+    await new Promise<void>((resolve) => {
+      void InteractionManager.runAfterInteractions(() => resolve())
+    })
+
     for (const file of targets) {
-      // Abandon the moment the user moves, or another prefetch takes the slot.
-      if (mine !== generation || busy) return
+      // Abandon the moment the user moves: the newer request is waiting in the
+      // queue and starts as soon as this returns.
+      if (mine !== generation) return
       // Re-check: the user may have visited this file while we waited, which
       // caches it through the normal path.
-      if (hasPrepared(file.id)) continue
+      if (hasPrepared(file.id) || preparing.has(file.id)) continue
 
-      busy = true
       try {
         /*
          * On the prefetch runtime, not the user's.
@@ -141,20 +145,18 @@ export function prefetchAround(files: FileEntry[], index: number): void {
          * the head-of-line blocking the `busy` flag above never covered,
          * because the contention was one level down.
          */
-        const prepared = await prepareFile(file, 'prefetch')
-        // Cached even if the generation moved on: the work is already paid for,
-        // and the result is just as valid for whenever the user arrives.
-        setPrepared(file.id, prepared)
-        // Persisted too, so the work survives the next backgrounding rather
-        // than being thrown away with the memory cache.
-        writePrepared(file.id, new File(LIBRARY_DIR, file.storedName), prepared)
+        /*
+         * Cached and persisted by `prepareAndCache`, even if the generation
+         * moved on: the work is already paid for, and the result is just as
+         * valid for whenever the user arrives. A user who opens this file
+         * meanwhile joins this run instead of starting a second parse.
+         */
+        await prepareAndCache(file, 'prefetch')
       } catch {
         // A file that cannot be prepared is remembered as such rather than
         // retried on every page turn. Opening it directly still surfaces the
         // real error through the renderer.
         notePrefetchFailure(file.id)
-      } finally {
-        busy = false
       }
     }
   })
@@ -177,6 +179,8 @@ export function prefetchAround(files: FileEntry[], index: number): void {
  */
 export function cancelPrefetch(): void {
   generation += 1
+  // A request still waiting would only check the generation and return.
+  queue.cancel()
   setPinned([])
 }
 

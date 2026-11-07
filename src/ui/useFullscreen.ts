@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 
-import { setStatusBarHidden } from 'expo-status-bar'
+import { StatusBar } from 'expo-status-bar'
 
 /**
  * Immersive reading: hides the system bars so the document owns the screen.
@@ -10,35 +10,38 @@ import { setStatusBarHidden } from 'expo-status-bar'
  * system's chrome — so the caller owns the state and this hook only mirrors it
  * onto the platform. Keeping a second copy here would let the two drift.
  *
- * Two halves, because they have different costs:
+ * ## The two calls, on SDK 57's supported APIs
  *
- * This app runs edge-to-edge (`edgeToEdgeEnabled=true`, both bars transparent),
- * and that changes what actually works:
+ *  - **Navigation bar:** `NavigationBar.setHidden` from `expo-navigation-bar`.
+ *    It drives the platform's `WindowInsetsController` and sets
+ *    `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE` itself, so a swipe from the edge
+ *    shows the bar over the content and it hides again — the reader is never
+ *    pushed around, and fullscreen survives an accidental swipe.
+ *  - **Status bar:** `StatusBar.setHidden` from `expo-status-bar`.
  *
- *  - `setStatusBarHidden` from `expo-status-bar` is a **no-op** here. Android
- *    logs `StatusBarModule: Ignored status bar change, current activity is
- *    edge-to-edge` and nothing happens. It is still called for the non-edge-to-
- *    edge case, but it cannot be relied on.
- *  - `expo-navigation-bar`'s `setVisibilityAsync` drives the platform's
- *    `WindowInsetsController`, which hides **both** bars under edge-to-edge.
- *    That is what makes immersive mode real rather than cosmetic.
+ * These replace `setVisibilityAsync` + `setBehaviorAsync` and
+ * `setStatusBarHidden`, all deprecated in SDK 57 (`setBehaviorAsync` was
+ * already gone — its optional call did nothing). The native calls underneath
+ * are the same ones the deprecated wrappers made, so behaviour is unchanged;
+ * what changes is that the next SDK upgrade cannot remove them from under us.
  *
- * The import stays lazy and guarded so a build without the native module
- * degrades to "insets collapse, bars stay" instead of crashing.
+ * The navigation-bar import stays lazy and guarded: its module requires a
+ * native module, and a build without it should degrade to "the bar stays",
+ * never to a reader that cannot load.
  */
 
 type NavBarModule = {
-  setVisibilityAsync: (v: 'visible' | 'hidden') => Promise<void>
-  setBehaviorAsync?: (b: 'inset-swipe' | 'overlay-swipe' | 'inset-touch') => Promise<void>
+  NavigationBar: { setHidden: (hidden: boolean) => void }
 }
 
 let navBar: NavBarModule | null | undefined
 
-/** Resolves the native module once; `null` means "not installed". */
+/** Resolves the module once; `null` means "not installed". */
 async function loadNavBar(): Promise<NavBarModule | null> {
   if (navBar !== undefined) return navBar
   try {
-    navBar = (await import('expo-navigation-bar')) as unknown as NavBarModule
+    const mod = (await import('expo-navigation-bar')) as unknown as Partial<NavBarModule>
+    navBar = typeof mod.NavigationBar?.setHidden === 'function' ? (mod as NavBarModule) : null
   } catch {
     navBar = null
   }
@@ -49,21 +52,23 @@ async function applyNavBar(hidden: boolean): Promise<void> {
   const mod = await loadNavBar()
   if (!mod) return
   try {
-    if (hidden) {
-      // `overlay-swipe`: a swipe from the edge shows the bar transiently over
-      // the content and it hides itself again — so the reader is never pushed
-      // around, and fullscreen survives an accidental swipe.
-      await mod.setBehaviorAsync?.('overlay-swipe')
-    }
-    await mod.setVisibilityAsync(hidden ? 'hidden' : 'visible')
+    mod.NavigationBar.setHidden(hidden)
   } catch {
     // Never let a system-UI call break reading.
   }
 }
 
+function applyStatusBar(hidden: boolean): void {
+  try {
+    StatusBar.setHidden(hidden, 'fade')
+  } catch {
+    // Same: system UI is never worth an error in the reader.
+  }
+}
+
 export function useFullscreen(hidden: boolean): void {
   useEffect(() => {
-    setStatusBarHidden(hidden, 'fade')
+    applyStatusBar(hidden)
     void applyNavBar(hidden)
   }, [hidden])
 
@@ -73,7 +78,7 @@ export function useFullscreen(hidden: boolean): void {
    */
   useEffect(() => {
     return () => {
-      setStatusBarHidden(false, 'fade')
+      applyStatusBar(false)
       void applyNavBar(false)
     }
   }, [])

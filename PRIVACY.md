@@ -1,6 +1,6 @@
 # StackRead Privacy Policy
 
-*Last updated: 14 October 2026*
+*Last updated: 7 November 2026*
 
 StackRead is a file reader for Android. This policy explains what happens to
 your information when you use it.
@@ -25,7 +25,11 @@ personal data.** Everything stays on your device.
 
 - no account or sign-in;
 - no analytics, tracking or advertising;
-- no crash reporting that sends data off your device;
+- no crash reporting that sends data off your device. If StackRead closes
+  unexpectedly, the next time you open it you may be asked whether to email a
+  short error report. It contains no file names or file contents, it opens in
+  your own email app so you can read it first, and nothing is sent unless you
+  send it;
 - no servers that receive your data.
 
 ## Backups

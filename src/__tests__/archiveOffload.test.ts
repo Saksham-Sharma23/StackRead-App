@@ -153,7 +153,10 @@ test('A3: phase 1 does not decompress the book\'s images', () => {
   assert.ok(phase1.length > 0, 'phase-1 wanted set not found')
   // The removed clause was `/^image\//i.test(item.type)`.
   assert.doesNotMatch(phase1, /\^image/, 'image manifest items must not join the first-paint unzip')
-  assert.equal(phase1.match(/wanted\.add\(/g)?.length, 4, 'nav, NCX, CSS and first-paint spine only')
+  // Five since the book's fonts joined: the stylesheet in the first paint names
+  // them, so they are first-paint resources too — budgeted in `bookFonts.ts`.
+  assert.equal(phase1.match(/wanted\.add\(/g)?.length, 5, 'nav, NCX, CSS, first-paint spine and fonts only')
+  assert.match(phase1, /chooseFonts\(/, 'fonts are chosen within their budget, not added wholesale')
 })
 
 test('A4: phase 2 builds its own chapters, and image bytes are not memoised', () => {

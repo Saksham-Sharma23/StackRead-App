@@ -6,7 +6,9 @@ import { normalizeBookCss } from './bookCss'
 import { mimeForImage } from './bytes'
 // Images are registered as raw bytes here and encoded once, lazily, when the
 // renderer streams them — so no base64 work happens during parsing any more.
-import { openArchive, type ArchiveHandle, type OffloadLane } from './offload'
+import { openArchive, toBase64OffThread, type ArchiveHandle, type OffloadLane } from './offload'
+// `resolvePath` lives with the font code so both resolve hrefs one way.
+import { ENCRYPTION_PATH, chooseFonts, encryptedPaths, fontMime, inlineFontUrls, resolvePath } from './bookFonts'
 import { now, type PrepareTrace } from '../../ui/perf'
 import { parseXml, asArray, attr, child, textOfNode } from './xml'
 import { sanitizeHtml } from './sanitize'
@@ -89,6 +91,8 @@ const BATCH_CHARS = 250_000
 
 export interface EpubResult {
   html: string
+  /** The book's stylesheet, normalised, with its fonts inlined. '' for none. */
+  css: string
   title?: string
   /** Chapter list for the reader's Chapters sheet. */
   toc: TocEntry[]
@@ -163,19 +167,6 @@ function textOf(zip: Record<string, Uint8Array>, path: string): string | null {
   return entry ? strFromU8(entry) : null
 }
 
-/** ZIP paths are absolute-ish; resolve an href relative to its manifest. */
-function resolvePath(base: string, href: string): string {
-  const clean = href.split('#')[0]
-  if (!base) return clean
-  const parts = base.split('/')
-  parts.pop()
-  for (const seg of clean.split('/')) {
-    if (seg === '.') continue
-    if (seg === '..') parts.pop()
-    else parts.push(seg)
-  }
-  return parts.join('/')
-}
 
 /** `chapter3.xhtml#page_42` → `{ path, fragment }`, resolved against the OPF. */
 function splitHref(base: string, href: string): { path: string; fragment: string | null } {
@@ -225,7 +216,7 @@ export async function loadEpubAsHtml(
 
   const archive = await openArchive(load, lane, trace)
   try {
-    return await buildBook(archive, trace)
+    return await buildBook(archive, lane, trace)
   } catch (err) {
     // A book that fails to parse must not keep its archive on the worker.
     archive.release()
@@ -240,7 +231,7 @@ export async function loadEpubAsHtml(
  * worker rather than the book. That is what took an open from six full-archive
  * copies across the worklet boundary to one.
  */
-async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<EpubResult> {
+async function buildBook(archive: ArchiveHandle, lane: OffloadLane, trace?: PrepareTrace): Promise<EpubResult> {
   /*
    * ## Two phases, and why
    *
@@ -268,9 +259,11 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
 
   // The container names the OPF, and the OPF names everything else — so the
   // first read has to be these two before the rest can even be identified.
-  const bootstrap = await archive.unzip(['META-INF/container.xml'], trace)
+  // `encryption.xml` rides along: it names obfuscated fonts, which are skipped.
+  const bootstrap = await archive.unzip(['META-INF/container.xml', ENCRYPTION_PATH], trace)
   const container = textOf(bootstrap, 'META-INF/container.xml')
   if (!container) throw new Error('Not a valid EPUB (no container.xml)')
+  const obfuscated = encryptedPaths(textOf(bootstrap, ENCRYPTION_PATH))
 
   /*
    * Parsed as XML rather than scraped with regexes.
@@ -335,7 +328,18 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
    * apply to every chapter, so appending them later would restyle the book
    * under the reader.
    */
-  const navItemEarly = [...manifest.values()].find((i) => /nav/.test(i.props))
+  /*
+   * The EPUB 3 nav document, found once and used both here and below.
+   *
+   * `properties` is a space-separated list, so it is split and compared rather
+   * than regex-tested. This lookup used to be a second regex whose word
+   * boundaries had been saved as two literal backspace characters (0x08) —
+   * invisible in an editor, and matching nothing — so the nav was never
+   * decompressed and every EPUB 3 book without an NCX fallback opened with no
+   * Chapters entry. One lookup means the two sites can never disagree again;
+   * `epubNav.test.ts` pins it.
+   */
+  const navItem = [...manifest.values()].find((i) => i.props.split(/\s+/).includes('nav'))
   const ncxIdEarly = attr(spineNode, 'toc')
   const ncxItemEarly = ncxIdEarly
     ? manifest.get(ncxIdEarly)
@@ -344,7 +348,7 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
   const firstSpine = spine.slice(0, FIRST_PAINT_SPINE_ITEMS)
 
   const wanted = new Set<string>()
-  if (navItemEarly) wanted.add(resolvePath(opfPath, navItemEarly.href))
+  if (navItem) wanted.add(resolvePath(opfPath, navItem.href))
   if (ncxItemEarly) wanted.add(resolvePath(opfPath, ncxItemEarly.href))
   for (const item of manifest.values()) {
     if (/text\/css/i.test(item.type)) wanted.add(resolvePath(opfPath, item.href))
@@ -362,6 +366,11 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
   }
   for (const href of firstSpine) wanted.add(resolvePath(opfPath, href))
 
+  // The book's own typefaces, in this same pass: the stylesheet that names
+  // them is needed for the first paint, so its fonts are too.
+  const fontPaths = chooseFonts([...manifest.values()], opfPath, sizeOf, obfuscated)
+  for (const path of fontPaths) wanted.add(path)
+
   const zip = await archive.unzip([...wanted], trace)
 
   // ---- navigation: page numbers and chapter list ----------------------------
@@ -370,8 +379,7 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
   let toc: TocEntry[] = []
   let navBase = opfPath
 
-  // EPUB 3: the manifest item carrying properties="nav".
-  const navItem = [...manifest.values()].find((i) => /\bnav\b/.test(i.props))
+  // EPUB 3: the manifest item carrying properties="nav" (found above).
   if (navItem) {
     const navPath = resolvePath(opfPath, navItem.href)
     const navDoc = textOf(zip, navPath)
@@ -411,11 +419,29 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
 
   // ---- stylesheet -----------------------------------------------------------
 
+  /*
+   * Fonts become data: URIs — the only font source the viewer's CSP allows —
+   * and each stylesheet's url() is resolved against that stylesheet's own path,
+   * which is how the book wrote it. Encoded off the JS thread.
+   */
+  const fontUris = new Map<string, string>()
+  for (const path of fontPaths) {
+    // One face, budgeted above — never the archive.
+    const face = zip[path]
+    if (!face) continue
+    try {
+      fontUris.set(path, `data:${fontMime(path)};base64,${await toBase64OffThread(face, lane)}`)
+    } catch {
+      // A font that will not encode falls back to the reader's own.
+    }
+  }
+
   const cssParts: string[] = []
   for (const item of manifest.values()) {
     if (!/text\/css/i.test(item.type)) continue
-    const css = textOf(zip, resolvePath(opfPath, item.href))
-    if (css) cssParts.push(css)
+    const cssPath = resolvePath(opfPath, item.href)
+    const css = textOf(zip, cssPath)
+    if (css) cssParts.push(inlineFontUrls(css, cssPath, fontUris))
   }
 
   // ---- chapters -------------------------------------------------------------
@@ -530,6 +556,30 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
       return tag.replace(/\bsrc\s*=\s*["'][^"']+["']/i, `data-sr-img="${token}"`)
     })
 
+    /*
+     * The same for SVG `<image>` — the usual way an EPUB draws its cover:
+     * `<svg viewBox="…"><image xlink:href="cover.jpg"/></svg>`, scaled to fit.
+     *
+     * Only `<img>` used to be rewritten, so a cover's href stayed a relative
+     * path the viewer can never load (its CSP fetches nothing) and the first
+     * page of many books was blank. The href becomes a token, filled with a
+     * blob: URL by the viewer exactly as an `<img>` is. A `data:` image is
+     * already loadable and is left alone; a remote one is dropped.
+     */
+    body = body.replace(/<image\b[^>]*>/gi, (tag) => {
+      const href = tag.match(/\s(?:xlink:)?href\s*=\s*["']([^"']+)["']/i)?.[1]
+      if (!href) return tag
+      if (/^data:/i.test(href)) return tag
+      if (/^https?:/i.test(href)) return ''
+
+      const token = registerImage(resolvePath(chapterPath, href))
+      if (!token) return ''
+
+      return tag
+        .replace(/\s(?:xlink:)?href\s*=\s*["'][^"']+["']/gi, '')
+        .replace(/^<image\b/i, `<image data-sr-img="${token}"`)
+    })
+
     body = injectPageAnchors(body, marksByChapter.get(chapterPath))
 
     // The chapter's own path becomes its id, so TOC links can find it.
@@ -548,9 +598,14 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
 
   if (!chapters.length) throw new Error('EPUB chapters could not be read')
 
-  const style = cssParts.length
-    ? `<style>${normalizeBookCss(cssParts.join('\n'))}</style>`
-    : ''
+  /*
+   * The stylesheet travels on its own, not as a `<style>` in the markup.
+   *
+   * It used to be prepended to the first chapter as a style element, and the
+   * viewer's sanitiser removes every style element — so no book's stylesheet
+   * ever applied. The viewer now installs `css` as a stylesheet of its own.
+   */
+  const css = cssParts.length ? normalizeBookCss(cssParts.join('\n')) : ''
 
   /*
    * ---- phase 2, deferred ----------------------------------------------------
@@ -788,7 +843,8 @@ async function buildBook(archive: ArchiveHandle, trace?: PrepareTrace): Promise<
 
   return {
     // Phase 1's chapters only. Phase 2 builds its own and never touches these.
-    html: style + chapters.join('\n'),
+    html: chapters.join('\n'),
+    css,
     title,
     toc,
     totalPages,

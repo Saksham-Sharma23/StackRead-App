@@ -40,6 +40,9 @@ interface Props {
 /** Debounce for the live search. See the note above about typing. */
 const TYPING_MS = 180
 
+/** The step arrows' colour when there is nothing to step through. */
+const STEP_DISABLED = 'rgba(255,255,255,0.3)'
+
 export function SearchBar({ fileId, theme, topOffset, unsupportedReason }: Props) {
   const query = useSearch((s) => s.query)
   const setQuery = useSearch((s) => s.setQuery)
@@ -134,20 +137,26 @@ export function SearchBar({ fileId, theme, topOffset, unsupportedReason }: Props
 
       <ToolButton
         glyph="‹"
+        icon="back"
+        color={total === 0 ? STEP_DISABLED : '#fff'}
         onPress={() => stepMatch(fileId, -1)}
         accessibilityLabel="Previous match"
         style={styles.stepBtn}
-        textStyle={[styles.stepGlyph, total === 0 ? styles.stepDisabled : null]}
+        textStyle={styles.stepGlyph}
       />
       <ToolButton
         glyph="›"
+        icon="right"
+        color={total === 0 ? STEP_DISABLED : '#fff'}
         onPress={() => stepMatch(fileId, 1)}
         accessibilityLabel="Next match"
         style={styles.stepBtn}
-        textStyle={[styles.stepGlyph, total === 0 ? styles.stepDisabled : null]}
+        textStyle={styles.stepGlyph}
       />
       <ToolButton
         glyph="✕"
+        icon="x"
+        iconSize={20}
         onPress={() => close(fileId)}
         accessibilityLabel="Close search"
         style={styles.stepBtn}
@@ -186,7 +195,6 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
   stepBtn: { width: 30, height: 34, alignItems: 'center', justifyContent: 'center' },
-  stepGlyph: { color: '#fff', fontSize: 24, lineHeight: 26 },
-  stepDisabled: { color: 'rgba(255,255,255,0.3)' },
-  closeGlyph: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  stepGlyph: { fontSize: 24, lineHeight: 26 },
+  closeGlyph: { fontSize: 16, fontWeight: '600' },
 })

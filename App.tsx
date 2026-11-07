@@ -16,7 +16,8 @@ import { useLibrary } from './src/store/library'
 import { useLook, useTheme } from './src/ui/theme'
 import { useAppLifecycle } from './src/ui/useAppLifecycle'
 import { perf, reportStartup } from './src/ui/perf'
-import { installCrashLog } from './src/ui/crashLog'
+import { installCrashLog, takePendingCrashReport } from './src/ui/crashLog'
+import { offerCrashReport } from './src/ui/crashPrompt'
 import { ErrorBoundary } from './src/components/ErrorBoundary'
 import { PdfCoverFactory } from './src/components/PdfCoverFactory'
 import { usePdfsNeedingCovers } from './src/store/selectors'
@@ -110,6 +111,14 @@ function Root() {
     // so it is where the startup line is complete and worth emitting.
     reportStartup()
     void SplashScreen.hideAsync().catch(() => {})
+
+    /*
+     * If the last session ended in a crash, offer — once — to email the report.
+     * After the board is up, so the question never sits over a splash screen.
+     * Nothing is sent unless the user sends it (ui/crashReport.ts).
+     */
+    const crash = takePendingCrashReport()
+    if (crash) offerCrashReport(crash)
   }, [loaded])
 
   /*

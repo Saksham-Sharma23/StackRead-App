@@ -257,7 +257,9 @@ test('D6: import and delete failures log ids and extensions, never names', () =>
 
 test('D7: copyIntoLibrary refuses an unknown extension before building a path', () => {
   const files = source('storage/files.ts')
-  const fn = files.slice(files.indexOf('export function copyIntoLibrary'))
+  const start = files.indexOf('export async function copyIntoLibrary')
+  assert.ok(start > 0, 'copyIntoLibrary must still exist')
+  const fn = files.slice(start)
   const guard = fn.indexOf('if (!isKnownExtension(originalName))')
   const path = fn.indexOf('storedFile(id, ext)')
   assert.ok(guard > 0 && path > guard, 'the guard must come before the path is built')

@@ -58,6 +58,34 @@ export function resolveAppearance(stored: StoredAppearance, isPro: boolean, syst
 }
 
 /**
+ * The colour theme a look's tile on the Appearance screen previews, or null
+ * for Classic (which draws with its own light/dark colours).
+ *
+ * The look in use previews exactly what it would draw — the stored theme, or
+ * the light/dark pair following the phone. Any other look previews what
+ * choosing it would give: its pair if it follows the phone (Modern), else its
+ * home theme. So every tile is a true picture of the board you would get.
+ */
+export function previewTheme(
+  look: Look,
+  stored: StoredAppearance,
+  systemDark: boolean,
+  choice: { home?: ThemeName; follow?: readonly [ThemeName, ThemeName] },
+): ThemeName | null {
+  if (look === 'classic') return null
+  if (look === stored.look) {
+    return stored.followSystem ? (systemDark ? stored.darkTheme : stored.lightTheme) : stored.theme
+  }
+  if (choice.follow) return systemDark ? choice.follow[1] : choice.follow[0]
+  return choice.home ?? stored.theme
+}
+
+/** Whether a look is behind the paywall for this user. Classic never is. */
+export function isLookLocked(look: Look, isPro: boolean): boolean {
+  return look !== 'classic' && !isPro
+}
+
+/**
  * Reads whatever was saved and keeps only valid values, field by field.
  *
  * Storage outlives code: a value written by a newer build, or a look that was

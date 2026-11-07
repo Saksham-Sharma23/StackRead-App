@@ -6,8 +6,9 @@ import Svg, { Circle, Path, Rect } from 'react-native-svg'
  *
  * Generated from the same data the Figma sheet is built from
  * (design/redesign-plugin/src/00-helpers.js, `IC`), so the app and the design
- * cannot drift apart. Used by the optional looks only — Classic keeps its text
- * glyphs.
+ * cannot drift apart. Used by the optional looks, and by Classic through
+ * `components/GlyphIcon`, which loads it after launch and falls back to text
+ * glyphs on a build without react-native-svg.
  *
  * Elements: p = stroked path, pf = filled + stroked path, c = stroked circle,
  * cf = filled dot, r = stroked rounded rect.
@@ -49,6 +50,9 @@ const ICONS = {
   margins: [['p', 'M4.5 4.5v15M19.5 4.5v15M8.5 8h7M8.5 12h7M8.5 16h4']],
   edit: [['p', 'M5 19h3.5L19 8.5 15.5 5 5 15.5z']],
   grid: [['r', 4.5, 4.5, 6, 6, 1.2], ['r', 13.5, 4.5, 6, 6, 1.2], ['r', 4.5, 13.5, 6, 6, 1.2], ['r', 13.5, 13.5, 6, 6, 1.2]],
+  // App-only, not in the Figma sheet: a text cursor, for the PDF "Select text"
+  // menu item. Drawn on the same grid and stroke as the rest.
+  select: [['p', 'M9 4.5h6M9 19.5h6M12 4.5v15']],
   palette: [['p', 'M12 3.5a8.5 8.5 0 1 0 0 17c1.2 0 1.8-.8 1.8-1.7 0-1.2-1-1.6-1-2.6 0-.9.7-1.6 1.7-1.6h2.2a3.8 3.8 0 0 0 3.8-3.8C20.5 6.9 16.7 3.5 12 3.5z'], ['cf', 7.8, 11, 1.1], ['cf', 10.5, 7.6, 1.1], ['cf', 14.8, 7.8, 1.1]],
 } as const satisfies Record<string, readonly El[]>
 

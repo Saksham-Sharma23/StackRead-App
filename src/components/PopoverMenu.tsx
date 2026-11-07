@@ -10,6 +10,8 @@ import Animated, {
 } from 'react-native-reanimated'
 
 import type { Theme } from '../ui/theme'
+import type { IconName } from '../looks/Icon'
+import { GlyphIcon } from './GlyphIcon'
 import { Spring, Timing, useReducedMotion } from '../ui/motion'
 import { usePressAnimation } from '../ui/usePressAnimation'
 
@@ -46,6 +48,8 @@ export interface MenuItem {
   key: string
   /** A single glyph, aligned in its own column so the labels line up. */
   glyph: string
+  /** The SVG icon drawn in its place once the icon set has loaded (`GlyphIcon`). */
+  icon?: IconName
   label: string
   onPress: () => void
 }
@@ -94,7 +98,17 @@ function Item({ item, theme, onClose }: { item: MenuItem; theme: Theme; onClose:
       accessibilityRole="menuitem"
       style={[styles.item, tint]}
     >
-      <Text style={[styles.glyph, { color: theme.fgDim }]}>{item.glyph}</Text>
+      {item.icon ? (
+        <GlyphIcon
+          name={item.icon}
+          glyph={item.glyph}
+          color={theme.fgDim}
+          size={20}
+          glyphStyle={styles.glyphFallback}
+        />
+      ) : (
+        <Text style={[styles.glyph, { color: theme.fgDim }]}>{item.glyph}</Text>
+      )}
       <Text numberOfLines={1} style={[styles.label, { color: theme.fg }]}>
         {item.label}
       </Text>
@@ -214,5 +228,7 @@ const styles = StyleSheet.create({
   /* A fixed-width column so the labels align even though the glyphs do not
      share a width — "Aa" is far wider than the magnifier. */
   glyph: { width: 20, fontSize: 15, fontWeight: '600', textAlign: 'center' },
+  // Inside GlyphIcon's 20 × 20 box, which already fixes the column width.
+  glyphFallback: { fontSize: 15, fontWeight: '600' },
   label: { fontSize: 15, flexShrink: 1 },
 })

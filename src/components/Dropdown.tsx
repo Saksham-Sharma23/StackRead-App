@@ -2,10 +2,12 @@ import { Pressable, StyleSheet, Text, View } from 'react-native'
 import Animated, { interpolateColor, useAnimatedStyle } from 'react-native-reanimated'
 
 import { usePressAnimation } from '../ui/usePressAnimation'
+import { GlyphIcon } from './GlyphIcon'
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable)
 
 const BORDER = ['rgba(255,255,255,0.22)', 'rgba(255,255,255,0.42)'] as const
+const CHEVRON = 'rgba(255,255,255,0.7)'
 const FILL = ['rgba(255,255,255,0.07)', 'rgba(255,255,255,0.12)'] as const
 
 /**
@@ -65,7 +67,7 @@ export function Dropdown({
         <Text numberOfLines={1} style={styles.value}>
           {value}
         </Text>
-        <Text style={styles.chevron}>⌄</Text>
+        <GlyphIcon name="down" glyph="⌄" color={CHEVRON} size={16} glyphStyle={styles.chevron} />
       </AnimatedPressable>
     </View>
   )
@@ -87,6 +89,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   value: { flex: 1, color: '#fff', fontSize: 13, fontWeight: '500' },
-  // Nudged up: the glyph sits low in its line box.
-  chevron: { color: 'rgba(255,255,255,0.7)', fontSize: 15, marginTop: -5 },
+  // The text stand-in only, nudged up: the glyph sits low in its line box. The
+  // SVG chevron is centred in its box and needs no nudge.
+  chevron: { fontSize: 15, fontWeight: '400', marginTop: -5 },
 })

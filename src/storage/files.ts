@@ -1,8 +1,9 @@
 import { InteractionManager } from 'react-native'
 import * as DocumentPicker from 'expo-document-picker'
-import { Directory, File } from 'expo-file-system'
+import { Directory, File, Paths } from 'expo-file-system'
 import { nanoid } from 'nanoid/non-secure'
 
+import * as Incoming from '../../modules/incoming-files/src'
 import type { FileEntry } from '../types'
 import { extensionOf, formatOf, isKnownExtension } from './formats'
 import { storage, LAST_FULL_SAVE_KEY, LAST_PRUNE_KEY } from './mmkv'
@@ -35,12 +36,27 @@ export interface ImportResult {
  * filters unevenly across vendors and a strict list silently hides files the
  * app can actually open (a `.md` served as `application/octet-stream`, say).
  * We filter by extension after the fact instead, which is predictable.
+ *
+ * ## One copy, off the JS thread
+ *
+ * This used to ask the picker for a cache copy (`copyToCacheDirectory`), then
+ * `copySync` that into the library — two full copies on disk, the second on
+ * the JS thread, so a large PDF froze the import overlay mid-spin, and the
+ * cache copy was never deleted. Now the picker hands back its `content://` URI
+ * and the native copier from "Open with" (`modules/incoming-files`) writes it
+ * straight into the library on a background thread: one copy, nothing left
+ * behind.
+ *
+ * A dev client built before that module existed falls back to the cache copy,
+ * copied asynchronously and deleted once it is in the library.
  */
 export async function importFiles(groupId: string, startOrder: number): Promise<ImportResult> {
+  // Decided before picking: the picker's own option chooses which URI comes back.
+  const nativeCopy = Incoming.isAvailable()
   const result = await DocumentPicker.getDocumentAsync({
     type: '*/*',
     multiple: true,
-    copyToCacheDirectory: true,
+    copyToCacheDirectory: !nativeCopy,
   })
 
   if (result.canceled) return { entries: [], skipped: [], cancelled: true }
@@ -54,11 +70,12 @@ export async function importFiles(groupId: string, startOrder: number): Promise<
   for (const asset of result.assets) {
     if (!isKnownExtension(asset.name)) {
       skipped.push(asset.name)
+      discardPickerCopy(asset.uri)
       continue
     }
 
     try {
-      entries.push(copyIntoLibrary(asset.uri, asset.name, groupId, order))
+      entries.push(await copyIntoLibrary(asset.uri, asset.name, groupId, order))
       order += 1
     } catch (err) {
       /*
@@ -73,6 +90,8 @@ export async function importFiles(groupId: string, startOrder: number): Promise<
         __DEV__ ? err : undefined,
       )
       skipped.push(asset.name)
+    } finally {
+      discardPickerCopy(asset.uri)
     }
   }
 
@@ -80,17 +99,51 @@ export async function importFiles(groupId: string, startOrder: number): Promise<
 }
 
 /**
+ * Deletes the picker's cache copy of a file, if that is what `uri` is.
+ *
+ * Only a file inside the app's cache directory is ours to delete. A
+ * `content://` URI is the user's original, reached through its provider, and
+ * is never touched.
+ */
+function discardPickerCopy(uri: string): void {
+  if (!uri.startsWith(Paths.cache.uri)) return
+  try {
+    const copy = new File(uri)
+    if (copy.exists) copy.delete()
+  } catch {
+    // The OS reclaims the cache directory on its own.
+  }
+}
+
+/**
  * Copies one file into the library dir under a generated id, returning its entry.
  * The original filename is kept only as display metadata.
+ *
+ * Never on the JS thread: a `content://` source goes through the native copier
+ * on a background thread, and anything else through `File.copy`, which is
+ * asynchronous. A copy that fails leaves no partial file in the library.
  */
-export function copyIntoLibrary(
+export async function copyIntoLibrary(
   sourceUri: string,
   originalName: string,
   groupId: string,
   orderInGroup: number,
-): FileEntry {
+): Promise<FileEntry> {
   const slot = newLibrarySlot(originalName)
-  new File(sourceUri).copySync(slot.target)
+  try {
+    if (sourceUri.startsWith('content://') && Incoming.isAvailable()) {
+      await Incoming.copyTo(sourceUri, slot.target.uri)
+    } else {
+      await new File(sourceUri).copy(slot.target)
+    }
+  } catch (err) {
+    try {
+      if (slot.target.exists) slot.target.delete()
+    } catch {
+      // An orphan here is collected by the next prune.
+    }
+    throw err
+  }
   return libraryEntry(slot, originalName, groupId, orderInGroup)
 }
 

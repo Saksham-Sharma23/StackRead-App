@@ -156,6 +156,9 @@ function sizeOf(prepared: Prepared): number {
   // matter; only that it scales with the real cost.
   let bytes = prepared.content.length * 2
 
+  // A book's stylesheet carries its fonts as base64 — up to a few megabytes.
+  if (prepared.css) bytes += prepared.css.length * 2
+
   // Deferred chapters are held here too until the viewer has taken them.
   if (prepared.rest) {
     for (const chunk of prepared.rest) bytes += chunk.length * 2

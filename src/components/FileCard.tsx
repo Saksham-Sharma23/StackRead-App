@@ -22,6 +22,7 @@ import { usePressAnimation } from '../ui/usePressAnimation'
 import { useFileEntry } from '../store/selectors'
 import { useThumbnail } from './useThumbnail'
 import { useSnippet } from './useSnippet'
+import { GlyphIcon } from './GlyphIcon'
 
 /**
  * One file on the board.
@@ -306,7 +307,7 @@ function FileCardImpl({ fileId, theme, onOpen, onMenu, dragging }: Props) {
         style={[styles.menuBtn, { backgroundColor: theme.overlay }, menuPress.animatedStyle]}
         accessibilityLabel={`Options for ${file.name}`}
       >
-        <Text style={styles.menuGlyph}>⋯</Text>
+        <GlyphIcon name="more" glyph="⋯" color="#fff" size={18} glyphStyle={styles.menuGlyph} />
       </AnimatedPressable>
     </Animated.View>
   )
@@ -410,5 +411,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  menuGlyph: { color: '#fff', fontSize: 15, fontWeight: '700', lineHeight: 17 },
+  menuGlyph: { fontSize: 15, fontWeight: '700', lineHeight: 17 },
 })

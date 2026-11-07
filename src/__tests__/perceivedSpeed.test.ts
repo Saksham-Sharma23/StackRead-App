@@ -314,12 +314,23 @@ test('a disk hit is promoted into the memory cache', () => {
 })
 
 test('a fresh parse is persisted from both the open and prefetch paths', () => {
+  /*
+   * Both paths now parse through `prepareAndCache`, which persists once for
+   * whichever asked first (so a prefetch and an open of the same file share
+   * one parse). The property is unchanged: each path's parse reaches disk.
+   * Rewritten from asserting `writePrepared` at both call sites, which is what
+   * the shared function exists to remove.
+   */
   assert.ok(
-    source('renderers/WebViewRenderer.tsx').includes('writePrepared(file.id,'),
+    source('renderers/webview/prepareOnce.ts').includes('writePrepared(file.id,'),
+    'the shared parse must persist its result',
+  )
+  assert.ok(
+    source('renderers/WebViewRenderer.tsx').includes("await prepareAndCache(file, 'user')"),
     'opening a file must persist its parse',
   )
   assert.ok(
-    source('renderers/webview/prefetch.ts').includes('writePrepared(file.id,'),
+    source('renderers/webview/prefetch.ts').includes("await prepareAndCache(file, 'prefetch')"),
     'a speculative parse must survive backgrounding too, or the work is thrown away',
   )
 })

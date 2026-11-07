@@ -44,6 +44,8 @@ test('every id-keyed cache is invalidated by the lifecycle owner', () => {
     'resetThumbnailAttempt',
     'forgetPrefetchFailure',
     'forgetSnippet',
+    // Not a cache but a run that is about to write into them (inflight.ts).
+    'preparing.forget',
   ]) {
     assert.ok(
       lifecycle.includes(`${call}(fileId)`),
@@ -59,6 +61,7 @@ test('every id-keyed cache is invalidated by the lifecycle owner', () => {
     'forgetAllScroll',
     'clearSnippets',
     'releaseAllArchives',
+    'preparing.clear',
   ]) {
     assert.ok(lifecycle.includes(`${call}()`), `resetAllCaches must call ${call}`)
   }

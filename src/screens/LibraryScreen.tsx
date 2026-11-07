@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
@@ -20,6 +20,7 @@ import { searchFiles, type SearchPage } from '../storage/db'
 import { exportLibrary, importLibraryArchive } from '../storage/backup'
 import { snapshotLibrary, useLibrary } from '../store/library'
 import { usePendingRemoval } from '../store/pendingRemoval'
+import { openTarget, visibleResults } from '../store/searchTarget'
 import {
   useFileCount,
   useGroupCounts,
@@ -33,8 +34,13 @@ import { NavBarScrim } from '../components/NavBarScrim'
 import { LibrarySearch } from '../components/LibrarySearch'
 import { MoveSheetContainer } from '../components/MoveSheet'
 import { EmptyBoard } from '../components/EmptyBoard'
+import { GlyphIcon } from '../components/GlyphIcon'
+import { CardPreview } from '../components/CardPreview'
 import { useTheme } from '../ui/theme'
-import { LOOK_CHOICES, lookSheetActions, useSkin } from '../looks/registry'
+import { LOOK_CHOICES, useSkin } from '../looks/registry'
+
+/** Appearance (look, colours, reading font), loaded on first open — see its header. */
+const AppearanceScreen = lazy(() => import('./AppearanceScreen'))
 import { cleanTitle } from '../looks/text'
 import { useAppearance } from '../store/appearance'
 
@@ -151,6 +157,8 @@ export function LibraryScreen({
   const moveFileToGroup = useLibrary((s) => s.moveFileToGroup)
 
   const queueRemoval = usePendingRemoval((s) => s.queue)
+  /** Files inside their undo window — search must neither list nor open them. */
+  const hiddenIds = usePendingRemoval((s) => s.hiddenIds)
   const queueGroupRemoval = usePendingRemoval((s) => s.queueGroup)
   const resumeInterrupted = usePendingRemoval((s) => s.resumeInterrupted)
 
@@ -256,6 +264,8 @@ export function LibraryScreen({
   }, [])
 
   const [sheet, setSheet] = useState<SheetState>({ kind: 'none' })
+  /** Whether the Appearance screen has been opened yet (it is lazy; see below). */
+  const [appearanceMounted, setAppearanceMounted] = useState(false)
   const [importing, setImporting] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   /** Progress text while a folder or ZIP is imported as a group; null otherwise. */
@@ -389,6 +399,24 @@ export function LibraryScreen({
   }, [results.files.length])
 
   /*
+   * What search shows and opens, checked against the store (`searchTarget.ts`).
+   *
+   * SQLite keeps a removed file's row until its undo window closes, so without
+   * the filter a just-removed file was listed — and opening it fell back to the
+   * first file of its group. The tapped entry is also swapped for the store's,
+   * so a file moved since the query opens in the group it is in now.
+   */
+  const shownResults = useMemo(() => visibleResults(results, hiddenIds), [results, hiddenIds])
+
+  const openSearchResult = useCallback(
+    (file: FileEntry) => {
+      const target = openTarget(file, useLibrary.getState().filesById, usePendingRemoval.getState().hiddenIds)
+      if (target) onOpenFile(target)
+    },
+    [onOpenFile],
+  )
+
+  /*
    * Cancel a query that is still pending when the screen goes away.
    *
    * The board unmounts whenever a file is opened, so without this a keystroke
@@ -473,6 +501,11 @@ export function LibraryScreen({
    * of these are created once.
    */
   const handleFileMenu = useCallback((file: FileEntry) => setSheet({ kind: 'file', file }), [])
+
+  /** The card being previewed (held, then released without a drag), or null. */
+  const [previewId, setPreviewId] = useState<string | null>(null)
+  const handlePreview = useCallback((fileId: string) => setPreviewId(fileId), [])
+  const closePreview = useCallback(() => setPreviewId(null), [])
 
   const handleGroupMenu = useCallback((group: Group) => setSheet({ kind: 'group', group }), [])
 
@@ -644,16 +677,18 @@ ${result.uri}`)
   const settingsActions = useCallback(
     (): SheetAction[] => [
       /*
-       * The one Classic-visible change in TASKS3: a way in to the looks. A
-       * plain row of the existing sheet, until the full Appearance screen (L2)
-       * replaces the picker it opens.
+       * The way in to the looks: the Appearance screen (TASKS3 L2) — look,
+       * colours and reading font — which replaced a plain list of look names.
        */
       {
         key: 'look',
-        label: 'Look…',
+        label: 'Appearance…',
         icon: 'palette',
         meta: LOOK_CHOICES.find((c) => c.look === storedLook)?.label,
-        onPress: () => setSheet({ kind: 'look' }),
+        onPress: () => {
+          setAppearanceMounted(true)
+          setSheet({ kind: 'look' })
+        },
       },
       { key: 'export', label: 'Back up library…', icon: 'upload', onPress: () => void handleExport() },
       { key: 'restore', label: 'Restore from backup…', icon: 'restore', onPress: () => void handleRestore() },
@@ -661,7 +696,6 @@ ${result.uri}`)
     [handleExport, handleRestore, storedLook],
   )
 
-  const lookActions = useCallback(() => lookSheetActions(storedLook), [storedLook])
 
   const fileActions = useCallback(
     (file: FileEntry): SheetAction[] => [
@@ -819,10 +853,11 @@ ${result.uri}`)
         onFileMenu={handleFileMenu}
         onAddFiles={handleRowAddFiles}
         onGroupMenu={handleGroupMenu}
+        onPreviewFile={handlePreview}
         skin={skin}
       />
     ),
-    [theme, onOpenFile, handleFileMenu, handleRowAddFiles, handleGroupMenu, skin],
+    [theme, onOpenFile, handleFileMenu, handleRowAddFiles, handleGroupMenu, handlePreview, skin],
   )
 
   /*
@@ -855,12 +890,12 @@ ${result.uri}`)
         {fileCount >= SEARCH_THRESHOLD && (
           <Search
             query={searchQuery}
-            results={results}
+            results={shownResults}
             limit={pages * SEARCH_PAGE}
             theme={theme}
             onQueryChange={runSearch}
             onShowMore={showMore}
-            onOpenFile={onOpenFile}
+            onOpenFile={openSearchResult}
           />
         )}
       </View>
@@ -873,7 +908,7 @@ ${result.uri}`)
             hitSlop={12}
             accessibilityLabel="Library options"
           >
-            <Text style={[styles.gear, { color: theme.fgDim }]}>⋯</Text>
+            <GlyphIcon name="more" glyph="⋯" color={theme.fgDim} size={26} glyphStyle={styles.gear} />
           </Pressable>
         </View>
         <Text style={[styles.appSub, { color: theme.fgFaint }]}>
@@ -899,12 +934,12 @@ ${result.uri}`)
         {fileCount >= SEARCH_THRESHOLD && (
           <LibrarySearch
             query={searchQuery}
-            results={results}
+            results={shownResults}
             limit={pages * SEARCH_PAGE}
             theme={theme}
             onQueryChange={runSearch}
             onShowMore={showMore}
-            onOpenFile={onOpenFile}
+            onOpenFile={openSearchResult}
           />
         )}
       </View>
@@ -914,11 +949,11 @@ ${result.uri}`)
       fileCount,
       groups.length,
       searchQuery,
-      results,
+      shownResults,
       pages,
       runSearch,
       showMore,
-      onOpenFile,
+      openSearchResult,
       openSettings,
       addToFirstGroup,
       skin,
@@ -1107,14 +1142,23 @@ ${result.uri}`)
         onClose={() => setSheet({ kind: 'none' })}
       />
 
-      <Sheet
-        visible={sheet.kind === 'look'}
-        title="Look"
-        subtitle="Restyles the board and the reader"
-        actions={sheet.kind === 'look' ? lookActions() : []}
+      <CardPreview
+        fileId={previewId}
         theme={theme}
-        onClose={() => setSheet({ kind: 'none' })}
+        onClose={closePreview}
+        onOpen={onOpenFile}
+        onMenu={handleFileMenu}
       />
+
+      {/*
+        Mounted on first open and kept, so its Modal can slide out on close.
+        Lazy: the screen brings every look's module and react-native-svg.
+      */}
+      {appearanceMounted ? (
+        <Suspense fallback={null}>
+          <AppearanceScreen visible={sheet.kind === 'look'} onClose={() => setSheet({ kind: 'none' })} />
+        </Suspense>
+      ) : null}
 
       <Sheet
         visible={sheet.kind === 'group'}

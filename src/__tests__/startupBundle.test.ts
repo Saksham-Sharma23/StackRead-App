@@ -85,6 +85,7 @@ test('E2: the EPUB parser and fast-xml-parser are not evaluated at startup', () 
     'src/renderers/webview/epub.ts',
     'src/renderers/webview/prepare.ts',
     'src/renderers/webview/prefetch.ts',
+    'src/renderers/webview/prepareOnce.ts',
     'src/screens/ReaderScreen.tsx',
     'src/renderers/WebViewRenderer.tsx',
   ]) {

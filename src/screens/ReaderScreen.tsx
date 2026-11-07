@@ -5,6 +5,7 @@ import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-na
 
 import type { FileEntry } from '../types'
 import { useGroupCounts, useGroupFiles, useGroupsSorted } from '../store/selectors'
+import { useLibrary } from '../store/library'
 import { flushLibrarySave } from '../storage/library'
 import { formatBytes } from '../storage/formats'
 import { prefetchAround, cancelPrefetch } from '../renderers/webview/prefetch'
@@ -16,6 +17,8 @@ import { ActionSheet, type SheetAction } from '../components/ActionSheet'
 import { Dropdown } from '../components/Dropdown'
 import { ToolButton } from '../components/ToolButton'
 import { TocSheet } from '../components/TocSheet'
+import { PdfTextSheet } from '../components/PdfTextSheet'
+import { fileUri } from '../storage/paths'
 import { ReaderSettingsSheet } from '../components/ReaderSettingsSheet'
 import { PopoverMenu, type MenuItem } from '../components/PopoverMenu'
 import { usePageNav } from '../store/pageNav'
@@ -24,12 +27,13 @@ import { SearchBar } from '../components/SearchBar'
 import { isAvailable as pdfSearchIsAvailable } from '../../modules/pdf-text/src'
 import type { TocEntry } from '../renderers/webview/pagination'
 import { useTheme } from '../ui/theme'
-import { lookSheetActions, useSkin } from '../looks/registry'
-import { useAppearance } from '../store/appearance'
+import { useSkin } from '../looks/registry'
+import { AppearanceScreen } from './AppearanceScreen'
 import { useLastRead } from '../store/lastRead'
 import { useReaderTap } from '../store/readerTap'
 import { Spring } from '../ui/motion'
 import { useFullscreen } from '../ui/useFullscreen'
+import { loadIconsNow } from '../ui/icons'
 
 /**
  * Full-screen reader.
@@ -53,7 +57,7 @@ interface Props {
  * value gets all three correct by construction, where a second boolean beside
  * this one would have had to be added to each of them by hand.
  */
-type Sheet = 'none' | 'file' | 'group' | 'toc' | 'display' | 'menu' | 'look'
+type Sheet = 'none' | 'file' | 'group' | 'toc' | 'display' | 'menu' | 'look' | 'text'
 
 /**
  * Height of the top bar's content, below the status-bar inset.
@@ -64,6 +68,13 @@ type Sheet = 'none' | 'file' | 'group' | 'toc' | 'display' | 'menu' | 'look'
  * as a bare `52` at one of those sites with nothing tying it to the other two.
  */
 const TOP_BAR_H = 52
+
+/*
+ * The reader is a lazy chunk, loaded when a file opens — so the icon set can
+ * load now rather than after the next idle moment, and the bar never shows its
+ * text stand-ins (ui/icons.ts). A no-op on a build without react-native-svg.
+ */
+loadIconsNow()
 
 /** Shared empty list, so "no chapters" is always the same reference. */
 const EMPTY_TOC: TocEntry[] = []
@@ -84,14 +95,18 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
   const theme = useTheme()
   /** The optional look's chrome (TASKS3); undefined in Classic. */
   const skin = useSkin()
-  /** The stored choice, for the Look picker in the ⋯ menu. */
-  const storedLook = useAppearance((s) => s.look)
-  /** The look picker is the look's own sheet when a look is active, Classic's otherwise. */
-  const LookSheet = skin?.Sheet ?? ActionSheet
   const insets = useSafeAreaInsets()
 
   const groups = useGroupsSorted()
-  const [groupId, setGroupId] = useState(initialFile.groupId)
+  /*
+   * The group the file is in *now*, from the store — not the one on the entry
+   * handed in. Callers can hold an older copy (a search row comes from SQLite,
+   * which trails the store), and opening a file into a group it has left made
+   * the index lookup below miss and land on another file.
+   */
+  const [groupId, setGroupId] = useState(
+    () => useLibrary.getState().filesById[initialFile.id]?.groupId ?? initialFile.groupId,
+  )
   const files = useGroupFiles(groupId)
 
   const [index, setIndex] = useState(() => {
@@ -198,6 +213,16 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
    * would mean it never fired at all.
    */
   const documentLive = usePageNav((s) => (current ? s.byFile[current.id] !== undefined : false))
+
+  /*
+   * The page being read and the page count, for the PDF text sheet. Numbers,
+   * so these selectors return primitives (CLAUDE.md §5.1).
+   */
+  const currentPage = usePageNav((s) => (current ? (s.byFile[current.id]?.current ?? 1) : 1))
+  const pageTotal = usePageNav((s) => (current ? (s.byFile[current.id]?.total ?? 0) : 0))
+
+  /** Select text in a PDF: the page's text in a sheet (see `PdfTextSheet`). */
+  const pdfTextAvailable = current?.format === 'pdf' && pdfSearchAvailable
 
   // A group can shrink under us (a file removed elsewhere); never index past it.
   useEffect(() => {
@@ -350,20 +375,27 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
       {
         key: 'search',
         glyph: '⌕',
+        icon: 'search',
         label: 'Find in document',
         onPress: () => setSearchOpen(true),
       },
     ]
 
     if (toc.length > 0) {
-      items.push({ key: 'toc', glyph: '☰', label: 'Chapters', onPress: () => setSheet('toc') })
+      items.push({ key: 'toc', glyph: '☰', icon: 'toc', label: 'Chapters', onPress: () => setSheet('toc') })
     }
 
-    items.push({ key: 'display', glyph: 'Aa', label: 'Display', onPress: () => setSheet('display') })
-    // Change look without leaving the document — the same picker as the board's ⋯ sheet.
-    items.push({ key: 'look', glyph: '◐', label: 'Look', onPress: () => setSheet('look') })
+    // A PDF page has no text layer to long-press, so its text is offered here.
+    if (pdfTextAvailable) {
+      items.push({ key: 'text', glyph: 'T', icon: 'select', label: 'Select text', onPress: () => setSheet('text') })
+    }
+
+    items.push({ key: 'display', glyph: 'Aa', icon: 'type', label: 'Display', onPress: () => setSheet('display') })
+    // Change look and theme without leaving the document — the same Appearance
+    // screen as the board's ⋯ sheet.
+    items.push({ key: 'look', glyph: '◐', icon: 'contrast', label: 'Appearance', onPress: () => setSheet('look') })
     return items
-  }, [toc.length, setSearchOpen, setSheet])
+  }, [toc.length, pdfTextAvailable, setSearchOpen, setSheet])
 
   const chromeStyle = useAnimatedStyle(() => ({
     opacity: chrome.value,
@@ -421,6 +453,8 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
       >
         <ToolButton
           glyph="‹"
+          icon="back"
+          iconSize={24}
           onPress={onClose}
           accessibilityLabel="Back to library"
           style={styles.backBtn}
@@ -458,6 +492,7 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
         */}
         <ToolButton
           glyph="⋯"
+          icon="more"
           onPress={() => setSheet('menu')}
           accessibilityLabel="More options"
           style={styles.toolBtn}
@@ -565,6 +600,17 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
         </>
       )}
 
+      {current.format === 'pdf' && (
+        <PdfTextSheet
+          visible={sheet === 'text'}
+          uri={fileUri(current.storedName)}
+          page={currentPage}
+          total={pageTotal}
+          theme={theme}
+          onClose={() => setSheet('none')}
+        />
+      )}
+
       <TocSheet
         visible={sheet === 'toc'}
         entries={toc}
@@ -592,14 +638,8 @@ export function ReaderScreen({ initialFile, onClose }: Props) {
         lines up with the button's, and `top` clears the bar via the same
         constant the bar is built from.
       */}
-      <LookSheet
-        visible={sheet === 'look'}
-        title="Look"
-        subtitle="Restyles the board and the reader"
-        actions={sheet === 'look' ? lookSheetActions(storedLook) : []}
-        theme={theme}
-        onClose={() => setSheet('none')}
-      />
+      {/* The same Appearance screen as the board's ⋯ sheet, over the document. */}
+      <AppearanceScreen visible={sheet === 'look'} onClose={() => setSheet('none')} />
 
       <PopoverMenu
         visible={sheet === 'menu'}

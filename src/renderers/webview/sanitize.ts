@@ -23,13 +23,11 @@
  * mailing list, a torrent — so the parser that first sees it should not be the
  * one sitting next to the JavaScript context.
  *
- * What this catches that the viewer's pass does not:
+ * Inline `style` attributes used to be on the list of what only this pass
+ * caught: it removed them, while the viewer left them alone. Both passes now
+ * filter them the same way — typography and spacing kept, everything else
+ * dropped (`INLINE_STYLE_PROPS` below) — and a test holds the two lists equal.
  *
- *  - `style` attributes. The viewer strips `<style>` *elements* but leaves
- *    inline `style` alone, which permits CSS that loads remote URLs. With no
- *    network access reaching the WebView that is largely defanged, but "largely"
- *    is doing real work in that sentence and the attribute buys the document
- *    nothing here — typography is controlled by reader settings.
  * Namespaced event handlers on SVG (`xlink:href="javascript:…"`, `ev:onload`)
  * used to belong on that list too. They no longer do: the viewer's pass now
  * matches on an attribute's *local* name and covers the same URL attributes
@@ -80,6 +78,79 @@ function decodeAttrValue(raw: string): string {
     // tabs that a literal prefix match would trip over.
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u0020]/g, '')
+}
+
+/**
+ * Inline style properties a document may keep — typography and spacing only.
+ *
+ * Inline `style` used to be removed outright, which threw away centred
+ * headings, italic and small-caps runs, poetry indents and spacing — the
+ * formatting many EPUBs carry in `style` attributes rather than in their
+ * stylesheet. These are kept now; everything else still goes:
+ *
+ *  - **colour and background** — the reader theme owns them, or a
+ *    black-on-white book stays black-on-white on a dark page;
+ *  - **position, size and float** — they break reflow on a phone;
+ *  - any value that is not plain words, numbers, units, quotes and commas — so
+ *    no `url(`, `expression(`, `var(`, entities, escapes or comments can get
+ *    through, whatever they are padded with.
+ *
+ * The viewer's DOM pass (`safeInlineStyle` in viewerHtml.ts) holds the same
+ * list and the same value rule. They must agree — `sanitize.test.ts` compares
+ * them — because two sanitisers that disagree about their scope leave a gap
+ * that is invisible in both.
+ */
+export const INLINE_STYLE_PROPS: readonly string[] = [
+  'text-align',
+  'text-indent',
+  'text-decoration',
+  'text-decoration-line',
+  'text-decoration-style',
+  'text-transform',
+  'font-style',
+  'font-weight',
+  'font-variant',
+  'font-size',
+  'font-family',
+  'vertical-align',
+  'letter-spacing',
+  'word-spacing',
+  'white-space',
+  'margin',
+  'margin-top',
+  'margin-right',
+  'margin-bottom',
+  'margin-left',
+  'padding',
+  'padding-top',
+  'padding-right',
+  'padding-bottom',
+  'padding-left',
+  'list-style-type',
+  'display',
+]
+
+/** Words, numbers, units, `%`, `#`, quotes, commas, `+`/`-`. No `(`, `\`, `&`, `;`, `/`, `<`, `@`. */
+const SAFE_STYLE_VALUE = /^[\w\s.,%#'"+-]*$/
+
+/**
+ * The allow-listed declarations of an inline `style` value, or '' for none.
+ *
+ * `!important` is dropped, so a document's inline style can never beat the
+ * reader's own controls.
+ */
+export function safeInlineStyle(raw: string): string {
+  const kept: string[] = []
+  for (const decl of raw.split(';')) {
+    const at = decl.indexOf(':')
+    if (at < 0) continue
+    const prop = decl.slice(0, at).trim().toLowerCase()
+    const value = decl.slice(at + 1).replace(/!\s*important/gi, '').trim()
+    if (!value || !INLINE_STYLE_PROPS.includes(prop)) continue
+    if (!SAFE_STYLE_VALUE.test(value)) continue
+    kept.push(`${prop}:${value}`)
+  }
+  return kept.join(';')
 }
 
 /**
@@ -235,7 +306,12 @@ function rewriteStartTags(html: string): string {
         }
       }
 
-      if (keepAttribute(attrName, value)) {
+      // An inline style keeps its safe declarations; one with none left goes.
+      const local = attrName.toLowerCase().slice(attrName.lastIndexOf(':') + 1)
+      if (local === 'style') {
+        const style = value === null ? '' : safeInlineStyle(value)
+        if (style) kept.push(`${attrName}="${style.replace(/"/g, '&quot;')}"`)
+      } else if (keepAttribute(attrName, value)) {
         kept.push(value === null ? attrName : `${attrName}="${value.replace(/"/g, '&quot;')}"`)
       }
     }

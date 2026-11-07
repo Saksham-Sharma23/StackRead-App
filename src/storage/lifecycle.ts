@@ -4,6 +4,7 @@ import { useSearch } from '../store/search'
 import { forgetPrepared, clearPrepared } from '../renderers/webview/prepareCache'
 import { forgetPreparedOnDisk, clearPreparedOnDisk } from '../renderers/webview/diskCache'
 import { releaseAllArchives } from '../renderers/webview/offload'
+import { preparing } from '../renderers/webview/inflight'
 // From `prefetchState`, not `prefetch`: the latter pulls the whole EPUB parser
 // into the startup bundle (AUDIT4 E2).
 import { forgetPrefetchFailure, resetPrefetchFailures } from '../renderers/webview/prefetchState'
@@ -87,6 +88,10 @@ import { forgetShownProgress, clearShownProgress } from '../looks/shownProgress'
  * is harmless.
  */
 export function forgetFileEverywhere(fileId: string): void {
+  // A parse still running for this id must not cache its result when it lands
+  // (renderers/webview/inflight.ts) — cleared first, before the caches it would
+  // write into.
+  preparing.forget(fileId)
   // The big one: a parsed EPUB or comic can be tens of megabytes.
   forgetPrepared(fileId)
   // And its persisted twin. The stamped filename already stops a *stale* parse
@@ -141,6 +146,9 @@ export function forgetFileEverywhere(fileId: string): void {
  * where those keys get cleaned up.
  */
 export function resetAllCaches(): void {
+  // Parses of the replaced bytes may still be running; detached, they finish
+  // without caching anything under ids that now mean different files.
+  preparing.clear()
   clearPrepared()
   // Archives parked on the worker runtimes are keyed per parse rather than per
   // file id, so nothing would read a stale one — but a restore replaces every

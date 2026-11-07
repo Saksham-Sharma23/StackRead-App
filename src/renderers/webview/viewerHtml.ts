@@ -36,6 +36,30 @@ export interface ViewerTheme {
 export type ViewerMode = 'paper' | 'items' | 'flow'
 
 /**
+ * Whether a `#rgb` / `#rrggbb` colour is dark, by relative luminance.
+ *
+ * Decides the page's `color-scheme`, which tells the browser how to draw what
+ * it draws itself — scrollbars, form controls, default text and selection
+ * colours. It used to compare the background against one hard-coded hex that
+ * matched no theme in the app (Classic dark is `#0b0c11`, and the looks have
+ * their own), so every dark page was declared light. Measuring the colour
+ * works for every theme, including ones added later. The viewer has the same
+ * test in its own script, for the page colour it receives in settings.
+ *
+ * Anything that is not a hex colour counts as light, the browser's default.
+ */
+export function isDarkColor(color: string): boolean {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim())
+  if (!m) return false
+  const hex = m[1].length === 3 ? m[1].replace(/./g, (c) => c + c) : m[1]
+  const r = parseInt(hex.slice(0, 2), 16)
+  const g = parseInt(hex.slice(2, 4), 16)
+  const b = parseInt(hex.slice(4, 6), 16)
+  // ITU-R BT.601 luma; below the midpoint reads as a dark surface.
+  return 0.299 * r + 0.587 * g + 0.114 * b < 128
+}
+
+/**
  * A fresh CSP nonce per document.
  *
  * Content cannot read it -- browsers hide a script's nonce from the DOM once
@@ -129,7 +153,7 @@ ${
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=6, user-scalable=yes">
 <style>
   :root {
-    color-scheme: ${theme.bg === '#0b0b0d' ? 'dark' : 'light'};
+    color-scheme: ${isDarkColor(theme.bg) ? 'dark' : 'light'};
     /* Reader controls live here, so changing one restyles the document
        instantly without re-parsing or re-sending it. */
     --sr-font-size: 17px;
@@ -197,6 +221,10 @@ ${
   }
   pre code { background: none; padding: 0; }
   img { max-width: 100%; height: auto; }
+  /* A cover drawn as an SVG with a viewBox scales to the page width by its own
+     aspect ratio. Only with a viewBox: without one, height:auto would collapse
+     an icon to the browser's 150px default. */
+  svg[viewBox] { max-width: 100%; height: auto; }
   ul, ol { padding-left: 1.5em; margin: 0 0 1em; }
   li { margin: .3em 0; }
 
@@ -282,6 +310,19 @@ ${
   .sr-tab.active { background: ${theme.accent}; border-color: ${theme.accent}; color: #fff; }
   .sr-sheet { display: none; }
   .sr-sheet.active { display: block; }
+  /* A book keeps its own typefaces (bookCss.ts) until the reader picks one in
+     the Display sheet; then the reader's choice wins everywhere but code. The
+     book's CSS has had every !important removed, so this one always holds. */
+  .sr-user-font #paper,
+  .sr-user-font #paper *:not(pre):not(code):not(kbd):not(samp) {
+    font-family: var(--sr-font) !important;
+  }
+
+  /* Shown above a grid cut to the sheetGrid.ts limits. */
+  .sr-sheet-note {
+    margin: 6px 2px 8px; font-size: 13px; line-height: 1.4;
+    color: ${theme.fgDim};
+  }
 
   /* ---- find-in-document highlights ----
      A background only: no padding or border, because a mark wraps a run of
@@ -564,12 +605,71 @@ ${
 
         if (local.indexOf('on') === 0) {
           node.removeAttribute(attrs[k].name);
+        } else if (local === 'style') {
+          // Typography and spacing only -- the same rule as the native pass.
+          var style = safeInlineStyle(attrs[k].value || '');
+          if (style) node.setAttribute(attrs[k].name, style);
+          else node.removeAttribute(attrs[k].name);
         } else if (isUrlAttr(local) && isExecutableScheme(attrs[k].value || '')) {
           node.removeAttribute(attrs[k].name);
         }
       }
     }
     return doc.body ? doc.body.innerHTML : '';
+  }
+
+  /**
+   * Inline style properties a document may keep, and the value rule.
+   *
+   * The same list and rule as INLINE_STYLE_PROPS / SAFE_STYLE_VALUE in
+   * sanitize.ts, held equal by sanitize.test.ts. Colour, background, position
+   * and size go; so does any value with a paren, backslash, ampersand, slash,
+   * angle bracket or at-sign, which is every way CSS can load or hide anything.
+   */
+  var INLINE_STYLE_PROPS = [
+    'text-align',
+    'text-indent',
+    'text-decoration',
+    'text-decoration-line',
+    'text-decoration-style',
+    'text-transform',
+    'font-style',
+    'font-weight',
+    'font-variant',
+    'font-size',
+    'font-family',
+    'vertical-align',
+    'letter-spacing',
+    'word-spacing',
+    'white-space',
+    'margin',
+    'margin-top',
+    'margin-right',
+    'margin-bottom',
+    'margin-left',
+    'padding',
+    'padding-top',
+    'padding-right',
+    'padding-bottom',
+    'padding-left',
+    'list-style-type',
+    'display',
+  ];
+  var SAFE_STYLE_VALUE = /^[\\w\\s.,%#'"+-]*$/;
+
+  function safeInlineStyle(raw) {
+    var kept = [];
+    var decls = String(raw).split(';');
+    for (var i = 0; i < decls.length; i++) {
+      var at = decls[i].indexOf(':');
+      if (at < 0) continue;
+      var prop = decls[i].slice(0, at).trim().toLowerCase();
+      var value = decls[i].slice(at + 1).replace(/!\\s*important/gi, '').trim();
+      if (!value || INLINE_STYLE_PROPS.indexOf(prop) < 0) continue;
+      if (!SAFE_STYLE_VALUE.test(value)) continue;
+      kept.push(prop + ':' + value);
+    }
+    return kept.join(';');
   }
 
   /**
@@ -1366,6 +1466,40 @@ ${
     if (isPhantom()) clearPhantomSelection();
   });
 
+  /*
+   * A book's own stylesheet, installed beside the content.
+   *
+   * It cannot ride inside the content: sanitize() removes style elements from
+   * file-supplied markup, which is right for markup and is why no book's
+   * stylesheet ever applied. This one was normalised on the native side
+   * (bookCss.ts) -- every rule scoped under #paper, nothing remote, fonts as
+   * data: URIs -- and the CSP above still blocks anything it might have missed.
+   * Written as textContent, so it is only ever CSS.
+   *
+   * A failure here is a book without its styling, never a failed open.
+   */
+  function installBookCss(css) {
+    try {
+      var tag = document.getElementById('sr-book');
+      if (!css) {
+        if (tag && tag.parentNode) tag.parentNode.removeChild(tag);
+        return;
+      }
+      if (!tag) {
+        tag = document.createElement('style');
+        tag.id = 'sr-book';
+        document.head.appendChild(tag);
+      }
+      tag.textContent = css;
+      // A book's fonts change every line break once they have loaded.
+      if (document.fonts && document.fonts.ready) {
+        document.fonts.ready.then(function () { measure(); reportPosition(true); });
+      }
+    } catch (e) {
+      post({ type: 'warn', message: 'book stylesheet: ' + String(e) });
+    }
+  }
+
   function installFont(css) {
     var el = document.getElementById('sr-font');
     if (!el) {
@@ -1379,6 +1513,21 @@ ${
     else requestAnimationFrame(settle);
   }
 
+  /**
+   * Whether a #rgb / #rrggbb colour is dark. The same test as isDarkColor in
+   * the host module, which sets the page's starting color-scheme; anything
+   * that is not a hex colour counts as light.
+   */
+  function isDarkHex(color) {
+    var m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(color).trim());
+    if (!m) return false;
+    var hex = m[1].length === 3 ? m[1].replace(/./g, function (c) { return c + c; }) : m[1];
+    var r = parseInt(hex.slice(0, 2), 16);
+    var g = parseInt(hex.slice(2, 4), 16);
+    var b = parseInt(hex.slice(4, 6), 16);
+    return 0.299 * r + 0.587 * g + 0.114 * b < 128;
+  }
+
   /** Applies reader typography without touching the document itself. */
   function applySettings(s) {
     if (!s) return;
@@ -1386,11 +1535,24 @@ ${
     if (s.fontSize) root.setProperty('--sr-font-size', s.fontSize + 'px');
     if (s.lineHeight) root.setProperty('--sr-line-height', String(s.lineHeight));
     if (s.margin != null) root.setProperty('--sr-margin', s.margin + 'px');
-    if (s.paper) root.setProperty('--sr-paper', s.paper);
+    if (s.paper) {
+      root.setProperty('--sr-paper', s.paper);
+      // The page colour decides how the browser draws its own parts --
+      // scrollbars, selection, form controls -- so a dark page says so.
+      root.colorScheme = isDarkHex(s.paper) ? 'dark' : 'light';
+    }
     if (s.ink) root.setProperty('--sr-ink', s.ink);
     // Set by the optional looks only. An empty string removes the property,
     // which puts the stylesheet's own value back.
-    if (s.fontFamily != null) root.setProperty('--sr-font', s.fontFamily);
+    if (s.fontFamily != null) {
+      root.setProperty('--sr-font', s.fontFamily);
+      // A reading font the user picked beats the book's own (see .sr-user-font).
+      var cl = document.documentElement.classList;
+      if (cl) {
+        if (s.fontFamily) cl.add('sr-user-font');
+        else cl.remove('sr-user-font');
+      }
+    }
     if (s.link != null) root.setProperty('--sr-link', s.link);
     if (s.code != null) root.setProperty('--sr-code', s.code);
 
@@ -1556,6 +1718,9 @@ ${
 
       el.className =
         mode === 'paper' ? 'paper-mode' : mode === 'items' ? 'items-mode' : 'flow-mode';
+
+      // The document's own stylesheet, or none -- never the previous one's.
+      installBookCss(payload.css || '');
 
       if (payload.format === 'markdown') {
         el.innerHTML = renderMarkdown(payload.content);
@@ -1848,7 +2013,13 @@ ${
       // illustration is one entry delivered once.
       var targets = el.querySelectorAll('[data-sr-img="' + cssEscape(token) + '"]');
       for (var t = 0; t < targets.length; t++) {
-        targets[t].src = url;
+        if (String(targets[t].tagName).toLowerCase() === 'image') {
+          // An SVG image -- an EPUB cover, usually. It has no src; it takes
+          // href (SVG 2, which every Android WebView in support reads).
+          targets[t].setAttribute('href', url);
+        } else {
+          targets[t].src = url;
+        }
         // Re-measure once it decodes: an image changes layout, which moves
         // every page anchor below it.
         targets[t].addEventListener('load', onImageSettled);

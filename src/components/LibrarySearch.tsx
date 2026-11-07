@@ -7,6 +7,7 @@ import type { FileEntry } from '../types'
 import type { Theme } from '../ui/theme'
 import { Duration, Ease, layoutTransition } from '../ui/motion'
 import { useLookFonts } from '../looks/registry'
+import { GlyphIcon } from './GlyphIcon'
 
 /**
  * Find a file by name, anywhere in the library.
@@ -73,7 +74,7 @@ export function LibrarySearch({
   return (
     <View style={styles.wrap}>
       <View style={[styles.field, { backgroundColor: theme.surfaceAlt, borderColor: theme.border }]}>
-        <Text style={[styles.glyph, { color: theme.fgFaint }]}>⌕</Text>
+        <GlyphIcon name="search" glyph="⌕" color={theme.fgFaint} size={18} glyphStyle={styles.glyph} />
         <TextInput
           value={query}
           onChangeText={onQueryChange}

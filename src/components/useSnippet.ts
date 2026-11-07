@@ -57,6 +57,54 @@ export function clearSnippets(): void {
 }
 
 /**
+ * The opening words of a file, read now — from the cache if already known.
+ *
+ * For the card's long-press preview, which shows the opening lines even for a
+ * file whose card shows a cover (so `useSnippet`'s "only without a cover" rule
+ * does not apply). Same bounded read, same cache.
+ */
+export function snippetOf(file: Pick<FileEntry, 'id' | 'storedName' | 'format'>): string | null {
+  if (!canSnippet(file.format)) return null
+  if (cache.has(file.id)) return cache.get(file.id) ?? null
+  const result = readSnippet(file)
+  remember(file.id, result)
+  return result
+}
+
+/** One bounded read of a file's prefix, made into a snippet. Never throws. */
+function readSnippet(file: Pick<FileEntry, 'storedName' | 'format'>): string | null {
+  let text: string | null = null
+  try {
+    const source = new File(LIBRARY_DIR, file.storedName)
+    if (source.exists) {
+      /*
+       * Only the first `SNIPPET_READ_BYTES`, through a file handle.
+       *
+       * This used to read the whole file and slice it, on the grounds that
+       * `MAX_PREPARE_BYTES` capped every format it runs for. It does not: that
+       * ceiling is checked when a file is *opened*, and imports are unlimited —
+       * so a 400MB log on the board became a 400MB string every launch, before
+       * the user touched anything ([AUDIT4 A7](../../AUDIT4.md)).
+       *
+       * `decodePrefix` handles a read that ends mid-character. The read is
+       * synchronous but a couple of kilobytes, so it costs nothing.
+       */
+      const handle = source.open(FileMode.ReadOnly)
+      try {
+        text = decodePrefix(handle.readBytes(SNIPPET_READ_BYTES))
+      } finally {
+        handle.close()
+      }
+    }
+  } catch {
+    // A preview is decoration. An unreadable file keeps its badge, and the
+    // real error surfaces when the user opens it.
+    text = null
+  }
+  return text && canSnippet(file.format) ? snippetFrom(text, file.format) : null
+}
+
+/**
  * The opening words of `file`, or null while unknown or unavailable.
  *
  * Returns synchronously on a cache hit, so a card scrolling back into view
@@ -80,38 +128,7 @@ export function useSnippet(file: FileEntry): string | null {
     let cancelled = false
 
     void (async () => {
-      let text: string | null = null
-      try {
-        const source = new File(LIBRARY_DIR, file.storedName)
-        if (source.exists) {
-          /*
-           * Only the first `SNIPPET_READ_BYTES`, through a file handle.
-           *
-           * This used to read the whole file and slice it, on the grounds
-           * that `MAX_PREPARE_BYTES` capped every format it runs for. It does
-           * not: that ceiling is checked when a file is *opened*, and imports
-           * are unlimited — so a 400MB log on the board became a 400MB string
-           * every launch, before the user touched anything
-           * ([AUDIT4 A7](../../AUDIT4.md)).
-           *
-           * `decodePrefix` handles a read that ends mid-character. The read is
-           * synchronous but a couple of kilobytes, so it costs nothing.
-           */
-          const handle = source.open(FileMode.ReadOnly)
-          try {
-            text = decodePrefix(handle.readBytes(SNIPPET_READ_BYTES))
-          } finally {
-            handle.close()
-          }
-        }
-      } catch {
-        // A preview is decoration. An unreadable file keeps its badge, and the
-        // real error surfaces when the user opens it.
-        text = null
-      }
-
-      const result =
-        text && canSnippet(file.format) ? snippetFrom(text, file.format) : null
+      const result = readSnippet(file)
 
       // Cached before the cancellation check: the read already happened, and
       // throwing the result away would make a card that scrolls past mid-read

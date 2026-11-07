@@ -134,6 +134,12 @@ const dark: Theme = {
 }
 
 /**
+ * Classic's two themes, for the Appearance screen's Classic preview tile —
+ * which has to draw Classic while another look is in use.
+ */
+export const CLASSIC_THEMES: { light: Theme; dark: Theme } = { light, dark }
+
+/**
  * The palette to draw with.
  *
  * Classic — the default, and the only look without Pro — returns the same

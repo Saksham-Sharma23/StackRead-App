@@ -1,5 +1,6 @@
 import { storage, LAST_CRASH_KEY } from '../storage/mmkv'
 import { scrubPaths } from './scrub'
+import { parseCrashRecord, type CrashReportRecord } from './crashReport'
 
 /**
  * A minimal record of the errors that take the app down.
@@ -13,7 +14,10 @@ import { scrubPaths } from './scrub'
  * went back" comes with a message and a stack.
  *
  * It is also the seam crash reporting (TASKS2 R7-1) plugs into: one place sees
- * every fatal error and every error a boundary caught.
+ * every fatal error and every error a boundary caught. Reporting is
+ * user-initiated — the next launch offers to email the record
+ * (`ui/crashReport.ts`) — because PRIVACY.md promises nothing leaves the
+ * device on its own.
  *
  * ## What is recorded
  *
@@ -86,12 +90,15 @@ export function installCrashLog(): void {
   reportPreviousCrash()
 }
 
+/** The previous session's fatal error, held until the UI offers to report it. */
+let pendingReport: CrashReportRecord | null = null
+
 /**
- * Logs, then clears, the fatal error the previous session died with.
+ * Logs, then clears, the fatal error the previous session died with — and
+ * keeps it in memory for `takePendingCrashReport`.
  *
- * Logged rather than shown: the user already knows the app closed, and a dialog
- * about it on the next launch helps nobody. A developer reading logcat, or
- * crash reporting once it exists, is the audience.
+ * Cleared from storage here, before any UI runs, so a report prompt that
+ * itself failed could never be shown on every launch after.
  */
 function reportPreviousCrash(): void {
   try {
@@ -99,7 +106,20 @@ function reportPreviousCrash(): void {
     if (!raw) return
     storage.remove(LAST_CRASH_KEY)
     console.warn(`[stackread] the previous session ended with a fatal error:\n${raw}`)
+    pendingReport = parseCrashRecord(raw)
   } catch {
     // A corrupt record is not worth a second crash.
   }
+}
+
+/**
+ * The previous session's fatal error, once — then null.
+ *
+ * For the launch prompt that offers to email it (`ui/crashReport.ts`). Taken,
+ * not peeked, so it is offered exactly once per crash.
+ */
+export function takePendingCrashReport(): CrashReportRecord | null {
+  const report = pendingReport
+  pendingReport = null
+  return report
 }

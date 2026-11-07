@@ -7,6 +7,7 @@ import { SheetShell } from './SheetShell'
 import { useLookFonts } from '../looks/registry'
 import type { LookFonts } from '../looks/skin'
 import type { IconName } from '../looks/Icon'
+import { GlyphIcon } from './GlyphIcon'
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable)
 
@@ -32,8 +33,9 @@ export interface SheetAction {
   /** Rendered dimmed and unpressable. */
   disabled?: boolean
   destructive?: boolean
-  /** Drawn only by the optional looks' sheet (TASKS3); Classic ignores both. */
+  /** Drawn by every sheet: the looks' as a tile, Classic's beside the label. */
   icon?: IconName
+  /** One-line description, drawn only by the optional looks' sheet (TASKS3). */
   detail?: string
   onPress: () => void
 }
@@ -83,6 +85,14 @@ function Item({
       android_ripple={{ color: theme.surfaceAlt }}
       style={[styles.item, tint]}
     >
+      {action.icon ? (
+        /* No text stand-in: a row reads fine without its icon until it loads. */
+        <GlyphIcon
+          name={action.icon}
+          color={action.disabled ? theme.fgFaint : action.destructive ? theme.danger : theme.fgDim}
+          size={20}
+        />
+      ) : null}
       <Text
         numberOfLines={1}
         style={[

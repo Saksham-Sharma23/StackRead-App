@@ -16,7 +16,8 @@ import { loadReadingFontCss } from '../looks/readingFontLoader'
 import { Spring } from '../ui/motion'
 import { LoadingCover } from '../components/LoadingCover'
 import { buildViewerHtml } from './webview/viewerHtml'
-import { prepareFile, type Prepared, type PreparedImage } from './webview/prepare'
+import type { Prepared, PreparedImage } from './webview/prepare'
+import { prepareAndCache } from './webview/prepareOnce'
 import { strToU8 } from 'fflate'
 
 import { toBase64OffThread } from './webview/offload'
@@ -44,6 +45,8 @@ import { parseViewerMessage } from './webview/viewerMessage'
 type Payload = {
   format: string
   content: string
+  /** The document's own stylesheet, installed by the viewer beside the content. */
+  css?: string
   mode: string
   /** Content-derived page count; the viewer never computes this from layout. */
   totalPages: number
@@ -528,7 +531,7 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
 
     // Settings are read once, not tracked, so changing the font re-styles via a
     // `settings` message instead of re-parsing the file.
-    const apply = (prepared: Awaited<ReturnType<typeof prepareFile>>) => {
+    const apply = (prepared: Prepared) => {
       // Deferred batches ride a ref rather than state: they are consumed once by
       // the streaming effect below and never rendered, so putting them in state
       // would re-render the component for data nothing displays.
@@ -619,27 +622,17 @@ export function WebViewRenderer({ file, active, fullscreen, onScaleChange }: Ren
           return
         }
 
-        const prepared = await prepareFile(file)
         /*
-         * Cached *before* the cancellation check, on purpose.
+         * Joins a prefetch already parsing this file rather than starting a
+         * second parse beside it, and caches the result — in memory and on
+         * disk — before returning (`prepareOnce.ts`).
          *
-         * If the user swiped away mid-parse this renderer must not call
-         * setState — but the parse itself already completed and cost the same
-         * seconds either way. Throwing the result away would make swiping
-         * away-and-back during a slow load the one case that never benefits
-         * from the cache, which is precisely when the wait is most annoying.
+         * Cached *before* the cancellation check, on purpose: if the user
+         * swiped away mid-parse this renderer must not call setState, but the
+         * parse already cost the same seconds either way, and swiping
+         * away-and-back during a slow load should still be a cache hit.
          */
-        setPrepared(file.id, prepared)
-        /*
-         * Persisted as well as held in memory.
-         *
-         * The memory cache is dropped wholesale when the app backgrounds, so
-         * without this every cold open reparses — seconds of unzip and assembly
-         * for a result that is a pure function of bytes that have not changed.
-         * `writePrepared` declines documents carrying images on its own, so
-         * this is a no-op for the formats where it would be wrong.
-         */
-        writePrepared(file.id, new File(LIBRARY_DIR, file.storedName), prepared)
+        const prepared = await prepareAndCache(file, 'user')
         if (cancelled) return
         apply(prepared)
       } catch (err) {

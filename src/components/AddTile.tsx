@@ -3,6 +3,7 @@ import Animated from 'react-native-reanimated'
 
 import { CARD, type Theme } from '../ui/theme'
 import { usePressAnimation } from '../ui/usePressAnimation'
+import { GlyphIcon } from './GlyphIcon'
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable)
 
@@ -19,7 +20,7 @@ export function AddTile({ theme, onPress }: { theme: Theme; onPress: () => void 
       accessibilityLabel="Add files to this group"
     >
       <View style={styles.inner}>
-        <Text style={[styles.plus, { color: theme.fgFaint }]}>+</Text>
+        <GlyphIcon name="plus" glyph="+" color={theme.fgFaint} size={30} glyphStyle={styles.plus} />
         <Text style={[styles.label, { color: theme.fgFaint }]}>Add files</Text>
       </View>
     </AnimatedPressable>

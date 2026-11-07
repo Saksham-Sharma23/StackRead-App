@@ -68,8 +68,13 @@ const MAX_TOTAL_BYTES = 120_000_000
  */
 const MAX_ENTRY_BYTES = 12_000_000
 
-/** Bumped when the serialised shape changes, so old entries are ignored. */
-const FORMAT_VERSION = 1
+/**
+ * Bumped when the serialised shape changes, so old entries are ignored.
+ *
+ * 2: books carry their stylesheet as `css`. A version-1 entry has none, and
+ * would open every cached book without its own styling and fonts.
+ */
+const FORMAT_VERSION = 2
 
 interface Envelope {
   v: number
